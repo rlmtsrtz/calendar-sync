@@ -1,8 +1,9 @@
-name: Deploy to GitHub Pages
+name: Deploy Flutter Web
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   schedule:
     - cron: '0 4 * * *' # Daily at 4 AM
   workflow_dispatch:
@@ -10,15 +11,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+#    permissions:
+#      contents: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: stable
 
       - name: Install dependencies
         run: flutter pub get
@@ -45,8 +46,19 @@ jobs:
           mkdir -p build/web/calendars
           cp -r web/calendars/* build/web/calendars/ || true
 
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build/web
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
