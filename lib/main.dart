@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -113,11 +114,12 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Card(
+              elevation: 4,
               color: Colors.green.shade50,
               child: ListTile(
-                leading: const Icon(Icons.auto_awesome, color: Colors.green),
-                title: const Text('Alle Mannschaften in einem Kalender', style: TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: const Text('Abonniere diesen Link, um automatisch alle Spiele aller angelegten Teams zu sehen.'),
+                leading: const Icon(Icons.auto_awesome, color: Colors.green, size: 40),
+                title: const Text('KOMBI-LINK: Alle Teams abonnieren', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                subtitle: const Text('Nutze diesen Link in Google Kalender (via URL hinzufügen), um alle Teams gleichzeitig zu sehen.'),
                 trailing: ElevatedButton.icon(
                   onPressed: () => _copyToClipboard(_getWebcalUrl('all_teams.ics'), 'Kombinierter Webcal-Link kopiert!'),
                   icon: const Icon(Icons.copy),
@@ -127,7 +129,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
             ),
             const SizedBox(height: 24),
             const Text(
-              'Einzelne Mannschaften',
+              'Deine Mannschaften',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
@@ -143,17 +145,58 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                   return ListView.builder(
                     itemCount: teams.length,
                     itemBuilder: (context, index) {
-                      final team = teams[index].data() as Map<String, dynamic>;
+                      final teamDoc = teams[index];
+                      final team = teamDoc.data() as Map<String, dynamic>;
                       final teamId = team['id'];
+                      final List matches = team['lastMatches'] ?? [];
+
                       return Card(
-                        child: ListTile(
-                          title: Text(team['name'] ?? 'Unbekannt'),
+                        child: ExpansionTile(
+                          title: Text(team['name'] ?? 'Unbekannt', style: const TextStyle(fontWeight: FontWeight.bold)),
                           subtitle: Text('ID: $teamId'),
                           trailing: IconButton(
                             icon: const Icon(Icons.copy),
                             tooltip: 'Einzel-Link kopieren',
-                            onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Einzel-Link für ${team['name']} kopiert!'),
+                            onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Einzel-Link kopiert!'),
                           ),
+                          children: [
+                            if (matches.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text('Noch keine Spieldaten gefunden. Der Scraper läuft täglich um 4:00 Uhr.'),
+                              )
+                            else
+                              ...matches.map((m) {
+                                final DateTime date = DateTime.parse(m['start']);
+                                return ListTile(
+                                  dense: true,
+                                  leading: const Icon(Icons.event, size: 20),
+                                  title: Text(m['summary']),
+                                  subtitle: Text(DateFormat('dd.MM.yyyy HH:mm').format(date)),
+                                );
+                              }).toList(),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8.0),
+                              child: TextButton.icon(
+                                onPressed: () async {
+                                  if (await showDialog(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('Mannschaft löschen?'),
+                                      actions: [
+                                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+                                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
+                                      ],
+                                    ),
+                                  )) {
+                                    await teamDoc.reference.delete();
+                                  }
+                                },
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                label: const Text('Mannschaft entfernen', style: TextStyle(color: Colors.red)),
+                              ),
+                            )
+                          ],
                         ),
                       );
                     },
