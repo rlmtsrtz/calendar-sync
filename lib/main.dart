@@ -160,7 +160,6 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                   'Deine Mannschaften',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
-                // Rein informativer Chip, nicht mehr drückbar
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
@@ -283,20 +282,15 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
               ),
             ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _addTeamDialog,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Mannschaft hinzufügen'),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: _addTeamDialog,
+                icon: const Icon(Icons.add),
+                label: const Text('Mannschaft hinzufügen'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
                 ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: () => launchUrl(Uri.parse('https://github.com/rlmtsrtz/calendar-sync/actions')),
-                  icon: const Icon(Icons.settings),
-                  label: const Text('Logs'),
-                ),
-              ],
+              ),
             ),
           ],
         ),
