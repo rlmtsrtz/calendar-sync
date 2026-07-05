@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,21 +94,22 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           ElevatedButton(
             onPressed: () async {
               if (name.isNotEmpty && urlInput.isNotEmpty) {
-                // Wir speichern die URL und extrahieren die ID für den Dokument-Namen
+                // Team-ID extrahieren für den Scraper
                 String teamId = '';
                 if (urlInput.contains('team-id/')) {
                   final part = urlInput.split('team-id/')[1];
                   teamId = part.split(RegExp(r'[/|#|?]'))[0];
-                } else {
-                   // Fallback falls nur ID eingegeben wurde
-                   teamId = urlInput;
                 }
                 
-                await _firestore.collection('teams').doc(teamId).set({
+                // Wir nutzen eine neue UUID für das Dokument, damit nichts überschrieben wird
+                final String docId = const Uuid().v4();
+                
+                await _firestore.collection('teams').doc(docId).set({
                   'name': name,
                   'url': urlInput,
                   'id': teamId,
                   'createdAt': FieldValue.serverTimestamp(),
+                  'lastMatches': [],
                 });
                 Navigator.pop(context);
               }
@@ -153,19 +155,23 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
             const SizedBox(height: 8),
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
-                stream: _firestore.collection('teams').snapshots(),
+                stream: _firestore.collection('teams').orderBy('createdAt', descending: true).snapshots(),
                 builder: (context, snapshot) {
                   if (snapshot.hasError) return Text('Fehler: ${snapshot.error}');
                   if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
 
                   final teams = snapshot.data!.docs;
 
+                  if (teams.isEmpty) {
+                    return const Center(child: Text('Noch keine Mannschaften angelegt.'));
+                  }
+
                   return ListView.builder(
                     itemCount: teams.length,
                     itemBuilder: (context, index) {
                       final teamDoc = teams[index];
                       final team = teamDoc.data() as Map<String, dynamic>;
-                      final teamId = team['id'];
+                      final teamId = team['id'] ?? 'Keine ID';
                       final List matches = team['lastMatches'] ?? [];
 
                       return Card(

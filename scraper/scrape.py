@@ -10,43 +10,62 @@ from firebase_admin import credentials, firestore
 import uuid
 
 def parse_date(date_str, time_str):
+    # Datum extrahieren (Format: DD.MM.YYYY)
     match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_str)
     if not match:
         return None
+
+    # Zeit bereinigen (Format: HH:MM)
     time_match = re.search(r'(\d{2}:\d{2})', time_str)
     time_clean = time_match.group(1) if time_match else "12:00"
+
     full_str = f"{match.group(1)} {time_clean}"
     try:
         return datetime.strptime(full_str, "%d.%m.%Y %H:%M")
     except ValueError:
         return None
 
-def scrape_team(team_id, team_url=None):
-    # Wir nutzen die ID für den AJAX-Request, da dies stabiler ist.
-    # Aber wir loggen die URL zur Kontrolle.
-    url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
+def scrape_team(team_url, team_id):
+    # Wir nutzen die vom User angegebene URL, hängen aber den Bereich für den Spielplan an,
+    # falls er fehlt, oder nutzen die AJAX Schnittstelle mit der ID, falls die URL ungültig ist.
+
+    # Wenn wir eine valide ID haben, ist die AJAX URL am stabilsten:
+    ajax_url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'X-Requested-With': 'XMLHttpRequest'
     }
 
-    print(f"DEBUG: Scraping URL: {url} (Original: {team_url})")
+    print(f"DEBUG: Scrape Start für ID: {team_id}")
+    print(f"DEBUG: Versuche AJAX URL: {ajax_url}")
+
     try:
-        response = requests.get(url, headers=headers, timeout=20)
+        response = requests.get(ajax_url, headers=headers, timeout=20)
+
+        # Falls AJAX fehlschlägt, versuchen wir die Original-URL direkt
+        if response.status_code != 200 and team_url:
+            print(f"DEBUG: AJAX fehlgeschlagen ({response.status_code}), versuche Original-URL: {team_url}")
+            response = requests.get(team_url, headers=headers, timeout=20)
+
         if response.status_code != 200:
-            print(f"DEBUG: Status Code Fehler: {response.status_code}")
+            print(f"DEBUG: Fehler beim Abrufen der Daten. Status: {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Suche nach den Match-Zeilen
         rows = soup.find_all('tr', class_='row-match')
         if not rows:
-            rows = soup.select('table tr.row-match')
+            # Fallback Selektoren
+            rows = soup.select('.table-matchplan tr.row-match') or soup.select('tr[class*="row-match"]')
 
-        print(f"DEBUG: {len(rows)} potenzielle Spiele gefunden.")
+        print(f"DEBUG: {len(rows)} potenzielle Spiele in der Tabelle gefunden.")
 
         matches = []
         for row in rows:
             try:
+                # Überspringe versteckte Zeilen (z.B. Absetzungen)
                 if 'display-none' in row.get('class', []):
                     continue
 
@@ -60,6 +79,7 @@ def scrape_team(team_id, team_url=None):
 
                 home_name = home_cell.find('div', class_='club-name').text.strip()
                 away_name = away_cell.find('div', class_='club-name').text.strip()
+
                 dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
 
                 if dt:
@@ -70,13 +90,13 @@ def scrape_team(team_id, team_url=None):
                         'location': "Sportplatz"
                     })
             except Exception as e:
-                print(f"DEBUG: Fehler beim Parsen einer Zeile: {e}")
+                print(f"DEBUG: Zeile konnte nicht verarbeitet werden: {e}")
                 continue
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
         return matches
     except Exception as e:
-        print(f"DEBUG: Allgemeiner Fehler beim Scrapen von {team_id}: {e}")
+        print(f"DEBUG: Kritischer Fehler beim Scrapen: {e}")
         return None
 
 def create_calendar(name):
@@ -106,7 +126,7 @@ def main():
     print("DEBUG: Scraper gestartet.")
     firebase_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
     if not firebase_json:
-        print("DEBUG: Kein Firebase Secret gefunden!")
+        print("DEBUG: FIREBASE_SERVICE_ACCOUNT fehlt!")
         return
 
     try:
@@ -114,26 +134,25 @@ def main():
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
     except Exception as e:
-        print(f"DEBUG: Firebase Init Fehler: {e}")
+        print(f"DEBUG: Firebase Fehler: {e}")
         return
 
     db = firestore.client()
     teams_ref = db.collection('teams')
     docs = list(teams_ref.stream())
-    print(f"DEBUG: {len(docs)} Teams in Firestore gefunden.")
+    print(f"DEBUG: {len(docs)} Teams aus Firestore geladen.")
 
     os.makedirs('web/calendars', exist_ok=True)
     master_cal = create_calendar("TuS Dornberg Kombi")
 
-    # Dummy Termin (morgen um 15:00 Uhr)
+    # Dummy Termin für Sync-Check
     dummy_date = (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0)
-    dummy_matches = [{
+    add_to_calendar(master_cal, [{
         'start': dummy_date.isoformat(),
         'summary': "DEBUG: Kalender aktiv!",
         'description': "Dieser Termin zeigt, dass die Synchronisation funktioniert.",
         'location': "Dornberg"
-    }]
-    add_to_calendar(master_cal, dummy_matches)
+    }])
 
     all_matches_count = 0
     for doc in docs:
@@ -144,16 +163,21 @@ def main():
 
         if not team_id: continue
 
-        print(f"DEBUG: Verarbeite Team: {team_name} ({team_id})")
-        matches = scrape_team(team_id, team_url)
+        print(f"DEBUG: Verarbeite: {team_name}")
+        matches = scrape_team(team_url, team_id)
 
         if matches:
+            # Einzel-ICS
             ind_cal = create_calendar(f"Spielplan {team_name}")
             add_to_calendar(ind_cal, matches)
             with open(f'web/calendars/{team_id}.ics', 'wb') as f:
                 f.write(ind_cal.to_ical())
+
+            # Kombi-ICS
             add_to_calendar(master_cal, matches)
             all_matches_count += len(matches)
+
+            # Update Firestore Vorschau
             doc.reference.update({'lastMatches': matches[:10]})
         else:
             doc.reference.update({'lastMatches': []})
