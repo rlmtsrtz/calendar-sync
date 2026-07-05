@@ -94,16 +94,12 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           ElevatedButton(
             onPressed: () async {
               if (name.isNotEmpty && urlInput.isNotEmpty) {
-                // Team-ID extrahieren für den Scraper
                 String teamId = '';
                 if (urlInput.contains('team-id/')) {
                   final part = urlInput.split('team-id/')[1];
                   teamId = part.split(RegExp(r'[/|#|?]'))[0];
                 }
-                
-                // Wir nutzen eine neue UUID für das Dokument, damit nichts überschrieben wird
                 final String docId = const Uuid().v4();
-                
                 await _firestore.collection('teams').doc(docId).set({
                   'name': name,
                   'url': urlInput,
@@ -121,6 +117,21 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
     );
   }
 
+  Widget _buildKombiCard(String title, String filename, IconData icon) {
+    return Card(
+      elevation: 2,
+      child: ListTile(
+        leading: Icon(icon, color: Colors.green),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        trailing: ElevatedButton.icon(
+          onPressed: () => _copyToClipboard(_getWebcalUrl(filename), 'Link kopiert!'),
+          icon: const Icon(Icons.copy, size: 18),
+          label: const Text('Link'),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -133,20 +144,11 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Card(
-              elevation: 4,
-              color: Colors.green.shade50,
-              child: ListTile(
-                leading: const Icon(Icons.auto_awesome, color: Colors.green, size: 40),
-                title: const Text('KOMBI-LINK: Alle Teams abonnieren', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                subtitle: const Text('Nutze diesen Link in Google Kalender (via URL hinzufügen).'),
-                trailing: ElevatedButton.icon(
-                  onPressed: () => _copyToClipboard(_getWebcalUrl('all_teams.ics'), 'Kombinierter Webcal-Link kopiert!'),
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Link kopieren'),
-                ),
-              ),
-            ),
+            const Text('KOMBI-LINKS (Alle Mannschaften)', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            _buildKombiCard('Alle Spiele', 'all_teams.ics', Icons.all_inclusive),
+            _buildKombiCard('Nur Heimspiele', 'all_teams_home.ics', Icons.home),
+            _buildKombiCard('Nur Auswärtsspiele', 'all_teams_away.ics', Icons.flight_takeoff),
             const SizedBox(height: 24),
             const Text(
               'Deine Mannschaften',
@@ -178,12 +180,30 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                         child: ExpansionTile(
                           title: Text(team['name'] ?? 'Unbekannt', style: const TextStyle(fontWeight: FontWeight.bold)),
                           subtitle: Text('ID: $teamId'),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.copy),
-                            tooltip: 'Einzel-Link kopieren',
-                            onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Einzel-Link kopiert!'),
-                          ),
                           children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                              child: Wrap(
+                                spacing: 8,
+                                children: [
+                                  ActionChip(
+                                    avatar: const Icon(Icons.copy, size: 16),
+                                    label: const Text('Alle'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Link kopiert!'),
+                                  ),
+                                  ActionChip(
+                                    avatar: const Icon(Icons.home, size: 16),
+                                    label: const Text('Heim'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_home.ics'), 'Link kopiert!'),
+                                  ),
+                                  ActionChip(
+                                    avatar: const Icon(Icons.flight_takeoff, size: 16),
+                                    label: const Text('Gast'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_away.ics'), 'Link kopiert!'),
+                                  ),
+                                ],
+                              ),
+                            ),
                             if (matches.isEmpty)
                               const Padding(
                                 padding: EdgeInsets.all(16.0),
@@ -192,9 +212,10 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                             else
                               ...matches.map((m) {
                                 final DateTime date = DateTime.parse(m['start']);
+                                final bool isHome = m['isHome'] ?? false;
                                 return ListTile(
                                   dense: true,
-                                  leading: const Icon(Icons.event, size: 20),
+                                  leading: Icon(isHome ? Icons.home : Icons.flight_takeoff, size: 16, color: Colors.grey),
                                   title: Text(m['summary']),
                                   subtitle: Text(DateFormat('dd.MM.yyyy HH:mm').format(date)),
                                 );
@@ -207,7 +228,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                                   TextButton.icon(
                                     onPressed: () => launchUrl(Uri.parse(team['url'] ?? '')),
                                     icon: const Icon(Icons.link),
-                                    label: const Text('Auf Fussball.de öffnen'),
+                                    label: const Text('Fussball.de'),
                                   ),
                                   TextButton.icon(
                                     onPressed: () async {
@@ -225,7 +246,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                                       }
                                     },
                                     icon: const Icon(Icons.delete, color: Colors.red),
-                                    label: const Text('Entfernen', style: TextStyle(color: Colors.red)),
+                                    label: const Text('Löschen', style: TextStyle(color: Colors.red)),
                                   ),
                                 ],
                               ),
@@ -250,7 +271,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                 TextButton.icon(
                   onPressed: () => launchUrl(Uri.parse('https://github.com/rlmtsrtz/calendar-sync/actions')),
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Update Status prüfen'),
+                  label: const Text('Status'),
                 ),
               ],
             ),

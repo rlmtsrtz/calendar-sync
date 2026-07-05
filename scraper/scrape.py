@@ -20,7 +20,6 @@ def parse_date(date_str, time_str):
     time_clean = time_match.group(1) if time_match else "12:00"
 
     date_part = match.group(1)
-    # Falls das Jahr nur zweistellig ist, ergänzen wir 20
     if len(date_part.split('.')[-1]) == 2:
         parts = date_part.split('.')
         date_part = f"{parts[0]}.{parts[1]}.20{parts[2]}"
@@ -31,7 +30,7 @@ def parse_date(date_str, time_str):
     except ValueError:
         return None
 
-def scrape_team(team_url, team_id):
+def scrape_team(team_url, team_id, team_filter_name):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -48,8 +47,6 @@ def scrape_team(team_url, team_id):
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Wir suchen alle Zeilen im Table-Body
         tbody = soup.find('tbody')
         if not tbody:
             print("DEBUG: Kein <tbody> gefunden.")
@@ -65,48 +62,56 @@ def scrape_team(team_url, team_id):
         for row in rows:
             classes = row.get('class', [])
 
-            # Fall 1: Zeile mit Datum und Wettbewerb (row-competition oder row-headline)
+            # Fall 1: Zeile mit Datum und Wettbewerb
             if 'row-competition' in classes or 'row-headline' in classes:
                 date_cell = row.find('td', class_='column-date')
                 if date_cell:
-                    # Format oft: "So, 12.07.26 | 12:00"
                     text = date_cell.get_text(strip=True)
                     if '|' in text:
-                        current_date_str, current_time_str = text.split('|')
-                    else:
-                        current_date_str = text
+                        # Falls nur Uhrzeit da steht (z.B. "15:00"), behalten wir das alte Datum
+                        date_part, time_part = text.split('|')
+                        if re.search(r'\d{2}\.\d{2}', date_part):
+                            current_date_str = date_part.strip()
+                        current_time_str = time_part.strip()
+                    elif re.search(r'\d{2}\.\d{2}', text):
+                        current_date_str = text.strip()
 
-                # Falls row-headline (mobile): "Sonntag, 12.07.2026 - 12:00 Uhr | ..."
+                # Headline Check
                 headline_text = row.get_text(strip=True)
-                if 'row-headline' in classes and not current_date_str:
+                if 'row-headline' in classes:
                     match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
                     if match:
                         current_date_str = match.group(1)
                         current_time_str = match.group(2)
                 continue
 
-            # Fall 2: Zeile mit den Vereinen (Keine spezielle Klasse für Wettbewerb/Headline)
-            # Wir prüfen ob es zwei Spalten mit 'column-club' gibt
+            # Fall 2: Zeile mit den Vereinen
             club_cells = row.find_all('td', class_='column-club')
             if len(club_cells) >= 2 and current_date_str:
-                home_name = club_cells[0].find('div', class_='club-name')
-                away_name = club_cells[1].find('div', class_='club-name')
+                home_name_div = club_cells[0].find('div', class_='club-name')
+                away_name_div = club_cells[1].find('div', class_='club-name')
 
-                if home_name and away_name:
-                    home_text = home_name.get_text(strip=True)
-                    away_text = away_name.get_text(strip=True)
+                if home_name_div and away_name_div:
+                    home_text = home_name_div.get_text(strip=True)
+                    away_text = away_name_div.get_text(strip=True)
 
-                    dt = parse_date(current_date_str.strip(), current_time_str.strip())
+                    dt = parse_date(current_date_str, current_time_str)
                     if dt:
+                        # Typ bestimmen für Filterung (Heim/Auswärts)
+                        is_home = False
+                        # Wir vergleichen mit dem Namen, den der User vergeben hat,
+                        # oder wir schauen ob unser Teamname in home_text vorkommt.
+                        # Da team_filter_name der Name ist, den der User vergeben hat (z.B. "TuS Dornberg")
+                        if team_filter_name.lower() in home_text.lower():
+                            is_home = True
+
                         matches.append({
                             'start': dt.isoformat(),
                             'summary': f"{home_text} - {away_text}",
                             'description': f"Heim: {home_text}\nGast: {away_text}\nQuelle: {team_url}",
-                            'location': "Sportplatz"
+                            'location': "Sportplatz",
+                            'isHome': is_home
                         })
-                        # Wir setzen die Zeit zurück, damit sie nicht für die nächste Zeile (falls vorhanden) doppelt genutzt wird,
-                        # es sei denn es kommt eine neue Headline
-                        # current_date_str = ""
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
         return matches
@@ -124,8 +129,13 @@ def create_calendar(name):
     cal.add('method', 'PUBLISH')
     return cal
 
-def add_to_calendar(cal, matches):
+def add_to_calendar(cal, matches, filter_type='all'):
+    # filter_type: 'all', 'home', 'away'
+    count = 0
     for m in matches:
+        if filter_type == 'home' and not m['isHome']: continue
+        if filter_type == 'away' and m['isHome']: continue
+
         event = Event()
         event.add('summary', m['summary'])
         dt_start = datetime.fromisoformat(m['start'])
@@ -136,6 +146,8 @@ def add_to_calendar(cal, matches):
         event.add('uid', str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{m['summary']}_{m['start']}")) + "@tus-dornberg.de")
         event.add('dtstamp', datetime.now())
         cal.add_component(event)
+        count += 1
+    return count
 
 def main():
     print("DEBUG: Scraper gestartet.")
@@ -158,16 +170,11 @@ def main():
     print(f"DEBUG: {len(docs)} Teams aus Firestore geladen.")
 
     os.makedirs('web/calendars', exist_ok=True)
-    master_cal = create_calendar("TuS Dornberg Kombi")
 
-    # Dummy Termin für Sync-Check
-    dummy_date = (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0)
-    add_to_calendar(master_cal, [{
-        'start': dummy_date.isoformat(),
-        'summary': "DEBUG: Kalender aktiv!",
-        'description': "Dieser Termin zeigt, dass die Synchronisation funktioniert.",
-        'location': "Dornberg"
-    }])
+    # Master Kalender
+    master_all = create_calendar("TuS Dornberg Kombi (Alle)")
+    master_home = create_calendar("TuS Dornberg Kombi (Heim)")
+    master_away = create_calendar("TuS Dornberg Kombi (Auswärts)")
 
     all_matches_count = 0
     for doc in docs:
@@ -179,26 +186,36 @@ def main():
         if not team_id: continue
 
         print(f"DEBUG: Verarbeite: {team_name}")
-        matches = scrape_team(team_url, team_id)
+        matches = scrape_team(team_url, team_id, team_name)
 
         if matches:
-            # Einzel-ICS
-            ind_cal = create_calendar(f"Spielplan {team_name}")
-            add_to_calendar(ind_cal, matches)
-            with open(f'web/calendars/{team_id}.ics', 'wb') as f:
-                f.write(ind_cal.to_ical())
+            # Einzel-ICS (Alle, Heim, Auswärts)
+            for t in ['all', 'home', 'away']:
+                suffix = "" if t == "all" else f"_{t}"
+                cal_name = team_name + ("" if t == "all" else f" ({'Heim' if t == 'home' else 'Auswärts'})")
+                ind_cal = create_calendar(f"Spielplan {cal_name}")
+                add_to_calendar(ind_cal, matches, filter_type=t)
+                with open(f'web/calendars/{team_id}{suffix}.ics', 'wb') as f:
+                    f.write(ind_cal.to_ical())
 
-            # Kombi-ICS
-            add_to_calendar(master_cal, matches)
+            # Kombi-ICS befüllen
+            add_to_calendar(master_all, matches, 'all')
+            add_to_calendar(master_home, matches, 'home')
+            add_to_calendar(master_away, matches, 'away')
+
             all_matches_count += len(matches)
-
-            # Update Firestore Vorschau
-            doc.reference.update({'lastMatches': matches[:10]})
+            doc.reference.update({'lastMatches': matches[:15]})
         else:
             doc.reference.update({'lastMatches': []})
 
+    # Master speichern
     with open('web/calendars/all_teams.ics', 'wb') as f:
-        f.write(master_cal.to_ical())
+        f.write(master_all.to_ical())
+    with open('web/calendars/all_teams_home.ics', 'wb') as f:
+        f.write(master_home.to_ical())
+    with open('web/calendars/all_teams_away.ics', 'wb') as f:
+        f.write(master_away.to_ical())
+
     print(f"DEBUG: Fertig. Total Spiele: {all_matches_count}")
 
 if __name__ == "__main__":
