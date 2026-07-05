@@ -10,8 +10,8 @@ from firebase_admin import credentials, firestore
 import uuid
 
 def parse_date(date_str, time_str):
-    # Datum extrahieren (Format: DD.MM.YYYY)
-    match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_str)
+    # Datum extrahieren (Format: DD.MM.YYYY oder DD.MM.YY)
+    match = re.search(r'(\d{2}\.\d{2}\.\d{2,4})', date_str)
     if not match:
         return None
 
@@ -19,14 +19,19 @@ def parse_date(date_str, time_str):
     time_match = re.search(r'(\d{2}:\d{2})', time_str)
     time_clean = time_match.group(1) if time_match else "12:00"
 
-    full_str = f"{match.group(1)} {time_clean}"
+    date_part = match.group(1)
+    # Falls das Jahr nur zweistellig ist, ergänzen wir 20
+    if len(date_part.split('.')[-1]) == 2:
+        parts = date_part.split('.')
+        date_part = f"{parts[0]}.{parts[1]}.20{parts[2]}"
+
+    full_str = f"{date_part} {time_clean}"
     try:
         return datetime.strptime(full_str, "%d.%m.%Y %H:%M")
     except ValueError:
         return None
 
 def scrape_team(team_url, team_id):
-    # WUNSCH: Wir nutzen direkt die vom User bereitgestellte URL
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -37,60 +42,71 @@ def scrape_team(team_url, team_id):
     print(f"DEBUG: Scrape Start für URL: {team_url}")
 
     try:
-        # Wir laden die Seite. Falls es die Übersicht ist, versuchen wir auch den Spielplan-Tab zu finden.
         response = requests.get(team_url, headers=headers, timeout=20)
-
         if response.status_code != 200:
             print(f"DEBUG: Fehler beim Abrufen der URL ({response.status_code}).")
             return None
 
-        # Checken ob wir auf die Startseite umgeleitet wurden
-        if "willkommen-beim-amateurfussball" in response.url:
-            print(f"DEBUG: Wurde zur Startseite umgeleitet. URL scheint ungültig.")
-            return None
-
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Suche nach den Match-Zeilen
-        # Fussball.de nutzt 'row-match' in fast allen Tabellen (Übersicht und Spielplan)
-        rows = soup.find_all('tr', class_='row-match')
+        # Wir suchen alle Zeilen im Table-Body
+        tbody = soup.find('tbody')
+        if not tbody:
+            print("DEBUG: Kein <tbody> gefunden.")
+            return None
 
-        if not rows:
-            print("DEBUG: Keine 'row-match' Zeilen gefunden. Suche nach alternativen Tabellen...")
-            # Fallback: Suche nach allen Zeilen in Tabellen, die Teamnamen enthalten könnten
-            rows = soup.select('.table-matchplan tr') or soup.select('.club-matchplan-table tr')
-
-        print(f"DEBUG: {len(rows)} potenzielle Zeilen gefunden.")
+        rows = tbody.find_all('tr')
+        print(f"DEBUG: {len(rows)} Zeilen im <tbody> gefunden.")
 
         matches = []
+        current_date_str = ""
+        current_time_str = ""
+
         for row in rows:
-            try:
-                # Suche Zellen für Datum, Zeit, Heim, Gast
-                date_cell = row.find('td', class_='column-date') or row.find('td', class_='column-date-short')
-                time_cell = row.find('td', class_='column-time')
-                home_cell = row.find('td', class_='column-team-home')
-                away_cell = row.find('td', class_='column-team-away')
+            classes = row.get('class', [])
 
-                if not (date_cell and time_cell and home_cell and away_cell):
-                    continue
+            # Fall 1: Zeile mit Datum und Wettbewerb (row-competition oder row-headline)
+            if 'row-competition' in classes or 'row-headline' in classes:
+                date_cell = row.find('td', class_='column-date')
+                if date_cell:
+                    # Format oft: "So, 12.07.26 | 12:00"
+                    text = date_cell.get_text(strip=True)
+                    if '|' in text:
+                        current_date_str, current_time_str = text.split('|')
+                    else:
+                        current_date_str = text
 
-                home_name_div = home_cell.find('div', class_='club-name') or home_cell
-                away_name_div = away_cell.find('div', class_='club-name') or away_cell
-
-                home_name = home_name_div.text.strip()
-                away_name = away_name_div.text.strip()
-
-                dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
-
-                if dt:
-                    matches.append({
-                        'start': dt.isoformat(),
-                        'summary': f"{home_name} - {away_name}",
-                        'description': f"Heim: {home_name}\nGast: {away_name}\nQuelle: {team_url}",
-                        'location': "Sportplatz"
-                    })
-            except Exception as e:
+                # Falls row-headline (mobile): "Sonntag, 12.07.2026 - 12:00 Uhr | ..."
+                headline_text = row.get_text(strip=True)
+                if 'row-headline' in classes and not current_date_str:
+                    match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
+                    if match:
+                        current_date_str = match.group(1)
+                        current_time_str = match.group(2)
                 continue
+
+            # Fall 2: Zeile mit den Vereinen (Keine spezielle Klasse für Wettbewerb/Headline)
+            # Wir prüfen ob es zwei Spalten mit 'column-club' gibt
+            club_cells = row.find_all('td', class_='column-club')
+            if len(club_cells) >= 2 and current_date_str:
+                home_name = club_cells[0].find('div', class_='club-name')
+                away_name = club_cells[1].find('div', class_='club-name')
+
+                if home_name and away_name:
+                    home_text = home_name.get_text(strip=True)
+                    away_text = away_name.get_text(strip=True)
+
+                    dt = parse_date(current_date_str.strip(), current_time_str.strip())
+                    if dt:
+                        matches.append({
+                            'start': dt.isoformat(),
+                            'summary': f"{home_text} - {away_text}",
+                            'description': f"Heim: {home_text}\nGast: {away_text}\nQuelle: {team_url}",
+                            'location': "Sportplatz"
+                        })
+                        # Wir setzen die Zeit zurück, damit sie nicht für die nächste Zeile (falls vorhanden) doppelt genutzt wird,
+                        # es sei denn es kommt eine neue Headline
+                        # current_date_str = ""
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
         return matches
