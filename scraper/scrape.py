@@ -8,6 +8,7 @@ import re
 import firebase_admin
 from firebase_admin import credentials, firestore
 import uuid
+import time
 
 def parse_date(date_str, time_str):
     # Datum extrahieren (Format: DD.MM.YYYY oder DD.MM.YY)
@@ -30,40 +31,63 @@ def parse_date(date_str, time_str):
     except ValueError:
         return None
 
-def scrape_team(team_url, team_id, team_filter_name):
-    # WUNSCH: Wir nutzen den Mannschaftsspielplan via AJAX Resource
-    # Der User hat herausgefunden, dass dieser Link alle Spiele liefert:
-    # https://www.fussball.de/ajax.team.matchplan/-/mode/PAGE/team-id/{team_id}
+def get_game_location(detail_url):
+    """Ruft die Detailseite eines Spiels auf und extrahiert den Spielort."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    try:
+        # Kurze Pause um fussball.de nicht zu überlasten
+        time.sleep(0.3)
+        response = requests.get(detail_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
 
+            # Die Adresse steht oft in einem Element mit icon-location
+            full_text = soup.get_text()
+
+            # Wir prüfen auf deine spezifische Heim-Adresse
+            # Kirchdornberger Str. 46, 33619 Bielefeld
+            is_home = False
+            if "Kirchdornberger Str" in full_text and "33619" in full_text:
+                is_home = True
+            elif "BIPA-Sportarena" in full_text:
+                is_home = True
+
+            # Location Text extrahieren für den Kalender-Eintrag
+            location_text = "Unbekannter Ort"
+            loc_icon = soup.find('span', class_='icon-location')
+            if loc_icon:
+                # Text im Elternelement ohne das Wort "Anfahrt"
+                location_text = loc_icon.parent.get_text(strip=True).replace('Anfahrt', '').strip()
+
+            return location_text, is_home
+    except Exception as e:
+        print(f"DEBUG: Fehler beim Location-Check: {e}")
+
+    return "Sportplatz", False
+
+def scrape_team(team_url, team_id, team_filter_name):
+    # AJAX-URL für den kompletten Spielplan
     ajax_resource_url = f"https://www.fussball.de/ajax.team.matchplan/-/mode/PAGE/team-id/{team_id}"
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Language': 'de-DE,de;q=0.9',
         'Referer': team_url
     }
 
-    print(f"DEBUG: Scrape Start via AJAX Resource: {ajax_resource_url}")
+    print(f"DEBUG: Scrape Start für {team_filter_name} via AJAX")
 
     try:
         response = requests.get(ajax_resource_url, headers=headers, timeout=20)
-
-        # Falls die AJAX Resource fehlschlägt, nutzen wir als Fallback die vom User bereitgestellte URL
         if response.status_code != 200:
-            print(f"DEBUG: AJAX Resource fehlgeschlagen ({response.status_code}). Versuche Original-URL.")
-            response = requests.get(team_url, headers=headers, timeout=20)
-
-        if response.status_code != 200:
-            print(f"DEBUG: Fehler beim Abrufen der Seite ({response.status_code}).")
+            print(f"DEBUG: AJAX Fehler {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Wir suchen alle Tabellen-Bodys
         tbodies = soup.find_all('tbody')
         if not tbodies:
-            print("DEBUG: Kein <tbody> gefunden.")
             return None
 
         matches = []
@@ -75,66 +99,63 @@ def scrape_team(team_url, team_id, team_filter_name):
             for row in rows:
                 classes = row.get('class', [])
 
-                # Datum extrahieren aus row-headline oder row-competition
+                # Datum merken (für Spiele ohne eigenes Datum in der Zeile)
                 if 'row-competition' in classes or 'row-headline' in classes:
                     date_cell = row.find('td', class_='column-date')
                     if date_cell:
                         text = date_cell.get_text(strip=True)
                         if '|' in text:
-                            # Wir prüfen ob ein Datum enthalten ist
                             parts = text.split('|')
-                            date_candidate = parts[0].strip()
-                            time_candidate = parts[1].strip()
+                            if re.search(r'\d{2}\.\d{2}', parts[0]):
+                                current_date_str = parts[0].strip()
+                            current_time_str = parts[1].strip()
+                        elif re.search(r'\d{2}\.\d{2}', text):
+                            current_date_str = text.strip()
 
-                            if re.search(r'\d{2}\.\d{2}', date_candidate):
-                                current_date_str = date_candidate
-
-                            # Die Zeit nehmen wir immer wenn sie da steht
-                            if re.search(r'\d{2}:\d{2}', time_candidate):
-                                current_time_str = time_candidate
-                        else:
-                            # Nur Datum oder nur Zeit?
-                            if re.search(r'\d{2}\.\d{2}', text):
-                                current_date_str = text.strip()
-                            if re.search(r'\d{2}:\d{2}', text):
-                                current_time_str = text.strip()
-
-                    # Mobile Headline Check
-                    headline_text = row.get_text(strip=True)
+                    # Mobile Headline Fallback
                     if 'row-headline' in classes:
-                        match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
+                        h_text = row.get_text(strip=True)
+                        match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', h_text)
                         if match:
                             current_date_str = match.group(1)
                             current_time_str = match.group(2)
                     continue
 
-                # Spiel-Daten extrahieren (Vereine)
+                # Eigentliche Spiel-Zeile
                 club_cells = row.find_all('td', class_='column-club')
+                detail_cell = row.find('td', class_='column-detail')
+
                 if len(club_cells) >= 2 and current_date_str:
-                    home_name_div = club_cells[0].find('div', class_='club-name')
-                    away_name_div = club_cells[1].find('div', class_='club-name')
+                    home_name = club_cells[0].get_text(strip=True)
+                    away_name = club_cells[1].get_text(strip=True)
 
-                    if home_name_div and away_name_div:
-                        home_text = home_name_div.get_text(strip=True)
-                        away_text = away_name_div.get_text(strip=True)
+                    # Link zum Spiel für den Location-Check
+                    detail_link = None
+                    if detail_cell and detail_cell.find('a'):
+                        detail_link = detail_cell.find('a')['href']
 
-                        dt = parse_date(current_date_str, current_time_str)
-                        if dt:
-                            # WUNSCH: Heimspiel ist wahr, wenn "Dornberg" im Namen des ERSTEN Teams vorkommt.
-                            is_home = "dornberg" in home_text.lower()
+                    # HEIM-LOGIK: Wir rufen die Detailseite auf und prüfen den Ort
+                    is_real_home = False
+                    location_name = "Sportplatz"
 
-                            matches.append({
-                                'start': dt.isoformat(),
-                                'summary': f"{home_text} - {away_text}",
-                                'description': f"Heim: {home_text}\nGast: {away_text}\nQuelle: {team_url}",
-                                'location': "Sportplatz",
-                                'isHome': is_home
-                            })
+                    if detail_link:
+                        print(f"DEBUG: Prüfe Ort für: {home_name} vs. {away_name}")
+                        location_name, is_real_home = get_game_location(detail_link)
 
-        print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
+                    dt = parse_date(current_date_str, current_time_str)
+                    if dt:
+                        matches.append({
+                            'start': dt.isoformat(),
+                            'summary': f"{home_name} - {away_name}",
+                            'description': f"Heim: {home_name}\nGast: {away_name}\nOrt: {location_name}\nLink: {detail_link}",
+                            'location': location_name,
+                            'isHome': is_real_home
+                        })
+
+        print(f"DEBUG: {len(matches)} Spiele erfolgreich mit Location-Check verarbeitet.")
         return matches
     except Exception as e:
-        print(f"DEBUG: Kritischer Fehler beim Scrapen: {e}")
+        print(f"DEBUG: Kritischer Fehler: {e}")
         return None
 
 def create_calendar(name):
@@ -164,10 +185,10 @@ def add_to_calendar(cal, matches, filter_type='all'):
         cal.add_component(event)
 
 def main():
-    print("DEBUG: Scraper gestartet.")
+    print("DEBUG: Scraper gestartet (Location-Logic active)")
     firebase_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
     if not firebase_json:
-        print("DEBUG: FIREBASE_SERVICE_ACCOUNT fehlt!")
+        print("DEBUG: Kein Firebase Secret gefunden!")
         return
 
     try:
@@ -175,13 +196,12 @@ def main():
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
     except Exception as e:
-        print(f"DEBUG: Firebase Fehler: {e}")
+        print(f"DEBUG: Firebase Init Fehler: {e}")
         return
 
     db = firestore.client()
     teams_ref = db.collection('teams')
     docs = list(teams_ref.stream())
-    print(f"DEBUG: {len(docs)} Teams aus Firestore geladen.")
 
     os.makedirs('web/calendars', exist_ok=True)
 
@@ -190,7 +210,6 @@ def main():
     master_home = create_calendar("TuS Dornberg Kombi (Heim)")
     master_away = create_calendar("TuS Dornberg Kombi (Auswärts)")
 
-    all_matches_count = 0
     for doc in docs:
         team = doc.to_dict()
         team_id = team.get('id')
@@ -198,27 +217,30 @@ def main():
         team_name = team.get('name', 'Unbekannt')
         if not team_id: continue
 
-        print(f"DEBUG: Verarbeite: {team_name}")
+        print(f"DEBUG: Verarbeite Team: {team_name}")
         matches = scrape_team(team_url, team_id, team_name)
 
         if matches:
+            # Einzel-ICS generieren
             for t in ['all', 'home', 'away']:
                 suffix = "" if t == "all" else f"_{t}"
-                cal_name = team_name + ("" if t == "all" else f" ({'Heim' if t == 'home' else 'Auswärts'})")
-                ind_cal = create_calendar(f"Spielplan {cal_name}")
+                cal_name = f"{team_name} ({t})"
+                ind_cal = create_calendar(cal_name)
                 add_to_calendar(ind_cal, matches, filter_type=t)
                 with open(f'web/calendars/{team_id}{suffix}.ics', 'wb') as f:
                     f.write(ind_cal.to_ical())
 
+            # In Master-Kalender einfügen
             add_to_calendar(master_all, matches, 'all')
             add_to_calendar(master_home, matches, 'home')
             add_to_calendar(master_away, matches, 'away')
 
-            all_matches_count += len(matches)
-            doc.reference.update({'lastMatches': matches[:100]}) # Alle Spiele in die Vorschau
+            # Firestore Vorschau aktualisieren
+            doc.reference.update({'lastMatches': matches[:100]})
         else:
             doc.reference.update({'lastMatches': []})
 
+    # Master speichern
     with open('web/calendars/all_teams.ics', 'wb') as f:
         f.write(master_all.to_ical())
     with open('web/calendars/all_teams_home.ics', 'wb') as f:
@@ -226,7 +248,7 @@ def main():
     with open('web/calendars/all_teams_away.ics', 'wb') as f:
         f.write(master_away.to_ical())
 
-    print(f"DEBUG: Fertig. Total Spiele: {all_matches_count}")
+    print(f"DEBUG: Scraper erfolgreich beendet.")
 
 if __name__ == "__main__":
     main()
