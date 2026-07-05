@@ -10,81 +10,82 @@ from firebase_admin import credentials, firestore
 import uuid
 
 def parse_date(date_str, time_str):
+    # Beispiel: "10.09.2023"
     match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_str)
     if not match:
         return None
 
-    if not re.match(r'^\d{2}:\d{2}$', time_str):
-        time_str = "12:00" # Fallback auf Mittag, falls Zeit unklar
+    # Zeit bereinigen (z.B. "15:00" statt "15:00 Uhr")
+    time_match = re.search(r'(\d{2}:\d{2})', time_str)
+    time_clean = time_match.group(1) if time_match else "12:00"
 
-    full_str = f"{match.group(1)} {time_str}"
+    full_str = f"{match.group(1)} {time_clean}"
     try:
         return datetime.strptime(full_str, "%d.%m.%Y %H:%M")
     except ValueError:
         return None
 
 def scrape_team(team_id):
-    url = f"https://www.fussball.de/mannschaft/-/-/team-id/{team_id}#!/section/team-matchplan"
+    # Neue URL Struktur für den Spielplan
+    url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest'
     }
 
     print(f"DEBUG: Scraping URL: {url}")
     try:
         response = requests.get(url, headers=headers, timeout=20)
-        print(f"DEBUG: Status Code: {response.status_code}")
-
         if response.status_code != 200:
+            print(f"DEBUG: Status Code Fehler: {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Suche nach der Tabelle - Fussball.de Struktur Check
-        table = soup.find('div', id='team-matchplan-table')
-        if not table:
-            table = soup.find('table', class_='table-matchplan')
+        # Fussball.de nutzt oft diese Klassen in der AJAX-Antwort
+        rows = soup.find_all('tr', class_='row-match')
+        if not rows:
+            # Versuch über die normale Tabellenstruktur
+            rows = soup.select('table tr.row-match')
 
-        if not table:
-            print(f"DEBUG: Keine Tabelle gefunden für ID {team_id}")
-            # Optional: Inhalt von soup.text[0:500] loggen
-            return None
-
-        rows = table.find_all('tr', class_='row-match')
-        print(f"DEBUG: {len(rows)} Zeilen in Tabelle gefunden.")
+        print(f"DEBUG: {len(rows)} potenzielle Spiele gefunden.")
 
         matches = []
         for row in rows:
-            if 'display-none' in row.get('class', []):
-                continue
+            try:
+                if 'display-none' in row.get('class', []):
+                    continue
 
-            date_cell = row.find('td', class_='column-date')
-            time_cell = row.find('td', class_='column-time')
-            home_cell = row.find('td', class_='column-team-home')
-            away_cell = row.find('td', class_='column-team-away')
+                date_cell = row.find('td', class_='column-date')
+                time_cell = row.find('td', class_='column-time')
+                home_cell = row.find('td', class_='column-team-home')
+                away_cell = row.find('td', class_='column-team-away')
 
-            if not (date_cell and time_cell and home_cell and away_cell):
-                continue
+                if not (date_cell and time_cell and home_cell and away_cell):
+                    continue
 
-            home_div = home_cell.find('div', class_='club-name')
-            away_div = away_cell.find('div', class_='club-name')
+                # Team Namen extrahieren
+                home_name = home_cell.find('div', class_='club-name').text.strip()
+                away_name = away_cell.find('div', class_='club-name').text.strip()
 
-            if home_div and away_div:
-                team_home = home_div.text.strip()
-                team_away = away_div.text.strip()
+                # Datum parsen
                 dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
 
                 if dt:
                     matches.append({
                         'start': dt.isoformat(),
-                        'summary': f"{team_home} - {team_away}",
-                        'description': f"Heim: {team_home}\nGast: {team_away}",
+                        'summary': f"{home_name} - {away_name}",
+                        'description': f"Heim: {home_name}\nGast: {away_name}",
                         'location': "Sportplatz"
                     })
+            except Exception as e:
+                print(f"DEBUG: Fehler beim Parsen einer Zeile: {e}")
+                continue
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
         return matches
     except Exception as e:
-        print(f"DEBUG: Fehler beim Scrapen von {team_id}: {e}")
+        print(f"DEBUG: Allgemeiner Fehler beim Scrapen von {team_id}: {e}")
         return None
 
 def create_calendar(name):
@@ -106,7 +107,7 @@ def add_to_calendar(cal, matches):
         event.add('dtend', dt_start + timedelta(minutes=105))
         event.add('description', m['description'])
         event.add('location', m['location'])
-        # UID muss absolut stabil sein für Google
+        # UID mit Domain-Suffix für bessere Kompatibilität
         event.add('uid', str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{m['summary']}_{m['start']}")) + "@tus-dornberg.de")
         event.add('dtstamp', datetime.now())
         cal.add_component(event)
@@ -122,7 +123,6 @@ def main():
         cred_dict = json.loads(firebase_json)
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
-        print("DEBUG: Firebase erfolgreich initialisiert.")
     except Exception as e:
         print(f"DEBUG: Firebase Init Fehler: {e}")
         return
@@ -135,16 +135,15 @@ def main():
     os.makedirs('web/calendars', exist_ok=True)
     master_cal = create_calendar("TuS Dornberg Kombi")
 
-    # Dummy Termin für Google-Check
-    dummy_date = (datetime.now() + timedelta(days=1, hours=15)).replace(minute=0, second=0, microsecond=0)
+    # Dummy Termin (morgen um 15:00 Uhr)
+    dummy_date = (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0)
     dummy_matches = [{
         'start': dummy_date.isoformat(),
-        'summary': "DEBUG-TERMIN: Verbindung steht!",
-        'description': "Wenn du das siehst, funktioniert die Kalender-URL.",
-        'location': "Kunstrasen"
+        'summary': "DEBUG: Kalender aktiv!",
+        'description': "Dieser Termin zeigt, dass die Synchronisation funktioniert.",
+        'location': "Dornberg"
     }]
     add_to_calendar(master_cal, dummy_matches)
-    print("DEBUG: Dummy-Termin zum Master hinzugefügt.")
 
     all_matches_count = 0
     for doc in docs:
@@ -152,9 +151,7 @@ def main():
         team_id = team.get('id')
         team_name = team.get('name', 'Unbekannt')
 
-        if not team_id:
-            print(f"DEBUG: Team ohne ID gefunden: {team_name}")
-            continue
+        if not team_id: continue
 
         print(f"DEBUG: Verarbeite Team: {team_name} ({team_id})")
         matches = scrape_team(team_id)
@@ -170,18 +167,14 @@ def main():
             add_to_calendar(master_cal, matches)
             all_matches_count += len(matches)
 
-            # Vorschau in Firestore speichern
+            # Firestore Update
             doc.reference.update({'lastMatches': matches[:10]})
-            print(f"DEBUG: {len(matches)} Spiele für {team_name} gespeichert.")
         else:
-            # Falls nichts gefunden wurde, Feld leeren
             doc.reference.update({'lastMatches': []})
-            print(f"DEBUG: Keine Spiele für {team_name} gefunden.")
 
-    # Master speichern
     with open('web/calendars/all_teams.ics', 'wb') as f:
         f.write(master_cal.to_ical())
-    print(f"DEBUG: Master-Kalender fertig (Total Spiele: {all_matches_count}).")
+    print(f"DEBUG: Fertig. Total Spiele: {all_matches_count}")
 
 if __name__ == "__main__":
     main()
