@@ -1,34 +1,46 @@
-name: Deploy Flutter Web
+name: Deploy to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   schedule:
     - cron: '0 4 * * *' # Daily at 4 AM
   workflow_dispatch:
 
+# Permissions for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  build:
+  build_and_deploy:
     runs-on: ubuntu-latest
-#    permissions:
-#      contents: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: 'stable'
 
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build Web
-        run: flutter build web --release --base-href "/tus_dornberg_calendar/"
+        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -38,27 +50,18 @@ jobs:
       - name: Run Scraper
         run: python scraper/scrape.py
 
-      - name: Copy data to build
+      - name: Prepare Deployment Files
         run: |
+          # Copy scraper data and calendars to build directory
           cp scraper/teams.json build/web/
-          # calendars are already generated into web/calendars by scrape.py
-          # which flutter build web might include, but let's be safe:
           mkdir -p build/web/calendars
           cp -r web/calendars/* build/web/calendars/ || true
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './build/web'
 
-    permissions:
-      pages: write
-      id-token: write
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
