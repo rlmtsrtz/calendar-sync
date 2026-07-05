@@ -24,7 +24,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Web
-        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+        run: flutter build web --release --base-href "/tus_dornberg_calendar/"
 
       - name: Setup Python
         uses: actions/setup-python@v4
