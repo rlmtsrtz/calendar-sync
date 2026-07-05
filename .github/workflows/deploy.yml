@@ -14,48 +14,17 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true # Wichtig: Verhindert, dass sich Deployments gegenseitig blockieren
 
 jobs:
-  # JOB 1: Nur den Scraper ausführen (Schnell und stabil)
-  update_calendars:
+  build_and_deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install Scraper Dependencies
-        run: pip install -r scraper/requirements.txt
-
-      - name: Run Scraper
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: python scraper/scrape.py
-
-      - name: Commit Updated Calendars
-        run: |
-          git config --global user.name 'GitHub Action'
-          git config --global user.email 'action@github.com'
-          mkdir -p web/calendars
-          git add web/calendars/*.ics || true
-          git commit -m "Update calendars" || echo "No changes to commit"
-          git push origin main || echo "No changes to push"
-
-  # JOB 2: Die Web-App bauen und deployen (Nur bei Push oder manuellem Start)
-  build_web:
-    needs: update_calendars
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main # Sicherstellen, dass wir die neuesten ICS-Files vom ersten Job haben
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -68,10 +37,26 @@ jobs:
       - name: Build Web
         run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
-      - name: Prepare and Upload Pages Artifact
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install -r scraper/requirements.txt
+
+      - name: Run Scraper
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python scraper/scrape.py
+
+      - name: Prepare Deployment Files
         run: |
+          # Kalender in das Build-Verzeichnis kopieren
           mkdir -p build/web/calendars
           cp -r web/calendars/* build/web/calendars/ || true
+          # Sicherstellen, dass die Datei vorhanden ist (für Debugging)
+          ls -R build/web/calendars
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

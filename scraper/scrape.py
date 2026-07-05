@@ -29,43 +29,44 @@ def scrape_team(team_url, team_id):
     # WUNSCH: Wir nutzen direkt die vom User bereitgestellte URL
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.fussball.de/'
     }
 
     print(f"DEBUG: Scrape Start für URL: {team_url}")
 
     try:
+        # Wir laden die Seite. Falls es die Übersicht ist, versuchen wir auch den Spielplan-Tab zu finden.
         response = requests.get(team_url, headers=headers, timeout=20)
 
         if response.status_code != 200:
-            print(f"DEBUG: Fehler beim Abrufen der Original-URL. Status: {response.status_code}")
-            # Fallback auf AJAX nur wenn die URL wirklich nicht geht
-            ajax_url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
-            print(f"DEBUG: Versuche AJAX Fallback: {ajax_url}")
-            response = requests.get(ajax_url, headers=headers, timeout=20)
+            print(f"DEBUG: Fehler beim Abrufen der URL ({response.status_code}).")
+            return None
 
-        if response.status_code != 200:
-            print(f"DEBUG: Auch Fallback fehlgeschlagen. Status: {response.status_code}")
+        # Checken ob wir auf die Startseite umgeleitet wurden
+        if "willkommen-beim-amateurfussball" in response.url:
+            print(f"DEBUG: Wurde zur Startseite umgeleitet. URL scheint ungültig.")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # Suche nach den Match-Zeilen
-        # Fussball.de nutzt oft 'row-match' für die Spiele
+        # Fussball.de nutzt 'row-match' in fast allen Tabellen (Übersicht und Spielplan)
         rows = soup.find_all('tr', class_='row-match')
-        if not rows:
-            # Fallback Selektoren für verschiedene Ansichten
-            rows = soup.select('.table-matchplan tr.row-match') or soup.select('tr[class*="row-match"]')
 
-        print(f"DEBUG: {len(rows)} potenzielle Spiele gefunden.")
+        if not rows:
+            print("DEBUG: Keine 'row-match' Zeilen gefunden. Suche nach alternativen Tabellen...")
+            # Fallback: Suche nach allen Zeilen in Tabellen, die Teamnamen enthalten könnten
+            rows = soup.select('.table-matchplan tr') or soup.select('.club-matchplan-table tr')
+
+        print(f"DEBUG: {len(rows)} potenzielle Zeilen gefunden.")
 
         matches = []
         for row in rows:
             try:
-                # Überspringe versteckte Zeilen (z.B. Absetzungen, falls gewünscht)
-                if 'display-none' in row.get('class', []):
-                    continue
-
-                date_cell = row.find('td', class_='column-date')
+                # Suche Zellen für Datum, Zeit, Heim, Gast
+                date_cell = row.find('td', class_='column-date') or row.find('td', class_='column-date-short')
                 time_cell = row.find('td', class_='column-time')
                 home_cell = row.find('td', class_='column-team-home')
                 away_cell = row.find('td', class_='column-team-away')
@@ -73,8 +74,11 @@ def scrape_team(team_url, team_id):
                 if not (date_cell and time_cell and home_cell and away_cell):
                     continue
 
-                home_name = home_cell.find('div', class_='club-name').text.strip()
-                away_name = away_cell.find('div', class_='club-name').text.strip()
+                home_name_div = home_cell.find('div', class_='club-name') or home_cell
+                away_name_div = away_cell.find('div', class_='club-name') or away_cell
+
+                home_name = home_name_div.text.strip()
+                away_name = away_name_div.text.strip()
 
                 dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
 
@@ -86,7 +90,6 @@ def scrape_team(team_url, team_id):
                         'location': "Sportplatz"
                     })
             except Exception as e:
-                print(f"DEBUG: Zeile konnte nicht verarbeitet werden: {e}")
                 continue
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
