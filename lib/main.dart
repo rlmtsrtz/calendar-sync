@@ -63,7 +63,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
 
   void _addTeamDialog() {
     String name = '';
-    String id = '';
+    String urlInput = '';
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -72,12 +72,19 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
-              decoration: const InputDecoration(labelText: 'Name der Mannschaft (z.B. 1. Mannschaft)'),
+              decoration: const InputDecoration(
+                labelText: 'Name der Mannschaft',
+                hintText: 'z.B. TuS Dornberg 1.',
+              ),
               onChanged: (value) => name = value,
             ),
+            const SizedBox(height: 10),
             TextField(
-              decoration: const InputDecoration(labelText: 'Fussball.de Team-ID'),
-              onChanged: (value) => id = value,
+              decoration: const InputDecoration(
+                labelText: 'Fussball.de Link',
+                hintText: 'Kopiere die ganze Adresse hier rein',
+              ),
+              onChanged: (value) => urlInput = value,
             ),
           ],
         ),
@@ -85,10 +92,21 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
           ElevatedButton(
             onPressed: () async {
-              if (name.isNotEmpty && id.isNotEmpty) {
-                await _firestore.collection('teams').doc(id).set({
+              if (name.isNotEmpty && urlInput.isNotEmpty) {
+                // Wir speichern die URL und extrahieren die ID für den Dokument-Namen
+                String teamId = '';
+                if (urlInput.contains('team-id/')) {
+                  final part = urlInput.split('team-id/')[1];
+                  teamId = part.split(RegExp(r'[/|#|?]'))[0];
+                } else {
+                   // Fallback falls nur ID eingegeben wurde
+                   teamId = urlInput;
+                }
+                
+                await _firestore.collection('teams').doc(teamId).set({
                   'name': name,
-                  'id': id,
+                  'url': urlInput,
+                  'id': teamId,
                   'createdAt': FieldValue.serverTimestamp(),
                 });
                 Navigator.pop(context);
@@ -119,7 +137,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
               child: ListTile(
                 leading: const Icon(Icons.auto_awesome, color: Colors.green, size: 40),
                 title: const Text('KOMBI-LINK: Alle Teams abonnieren', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                subtitle: const Text('Nutze diesen Link in Google Kalender (via URL hinzufügen), um alle Teams gleichzeitig zu sehen.'),
+                subtitle: const Text('Nutze diesen Link in Google Kalender (via URL hinzufügen).'),
                 trailing: ElevatedButton.icon(
                   onPressed: () => _copyToClipboard(_getWebcalUrl('all_teams.ics'), 'Kombinierter Webcal-Link kopiert!'),
                   icon: const Icon(Icons.copy),
@@ -163,7 +181,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                             if (matches.isEmpty)
                               const Padding(
                                 padding: EdgeInsets.all(16.0),
-                                child: Text('Noch keine Spieldaten gefunden. Der Scraper läuft täglich um 4:00 Uhr.'),
+                                child: Text('Noch keine Spieldaten gefunden. Starte den Scraper auf GitHub.'),
                               )
                             else
                               ...matches.map((m) {
@@ -176,24 +194,34 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                                 );
                               }).toList(),
                             Padding(
-                              padding: const EdgeInsets.only(bottom: 8.0),
-                              child: TextButton.icon(
-                                onPressed: () async {
-                                  if (await showDialog(
-                                    context: context,
-                                    builder: (context) => AlertDialog(
-                                      title: const Text('Mannschaft löschen?'),
-                                      actions: [
-                                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
-                                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
-                                      ],
-                                    ),
-                                  )) {
-                                    await teamDoc.reference.delete();
-                                  }
-                                },
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                label: const Text('Mannschaft entfernen', style: TextStyle(color: Colors.red)),
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  TextButton.icon(
+                                    onPressed: () => launchUrl(Uri.parse(team['url'] ?? '')),
+                                    icon: const Icon(Icons.link),
+                                    label: const Text('Auf Fussball.de öffnen'),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: () async {
+                                      if (await showDialog(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: const Text('Mannschaft löschen?'),
+                                          actions: [
+                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+                                            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
+                                          ],
+                                        ),
+                                      )) {
+                                        await teamDoc.reference.delete();
+                                      }
+                                    },
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    label: const Text('Entfernen', style: TextStyle(color: Colors.red)),
+                                  ),
+                                ],
                               ),
                             )
                           ],

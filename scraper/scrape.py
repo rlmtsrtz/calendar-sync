@@ -10,30 +10,27 @@ from firebase_admin import credentials, firestore
 import uuid
 
 def parse_date(date_str, time_str):
-    # Beispiel: "10.09.2023"
     match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_str)
     if not match:
         return None
-
-    # Zeit bereinigen (z.B. "15:00" statt "15:00 Uhr")
     time_match = re.search(r'(\d{2}:\d{2})', time_str)
     time_clean = time_match.group(1) if time_match else "12:00"
-
     full_str = f"{match.group(1)} {time_clean}"
     try:
         return datetime.strptime(full_str, "%d.%m.%Y %H:%M")
     except ValueError:
         return None
 
-def scrape_team(team_id):
-    # Neue URL Struktur für den Spielplan
+def scrape_team(team_id, team_url=None):
+    # Wir nutzen die ID für den AJAX-Request, da dies stabiler ist.
+    # Aber wir loggen die URL zur Kontrolle.
     url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'X-Requested-With': 'XMLHttpRequest'
     }
 
-    print(f"DEBUG: Scraping URL: {url}")
+    print(f"DEBUG: Scraping URL: {url} (Original: {team_url})")
     try:
         response = requests.get(url, headers=headers, timeout=20)
         if response.status_code != 200:
@@ -41,11 +38,8 @@ def scrape_team(team_id):
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Fussball.de nutzt oft diese Klassen in der AJAX-Antwort
         rows = soup.find_all('tr', class_='row-match')
         if not rows:
-            # Versuch über die normale Tabellenstruktur
             rows = soup.select('table tr.row-match')
 
         print(f"DEBUG: {len(rows)} potenzielle Spiele gefunden.")
@@ -64,18 +58,15 @@ def scrape_team(team_id):
                 if not (date_cell and time_cell and home_cell and away_cell):
                     continue
 
-                # Team Namen extrahieren
                 home_name = home_cell.find('div', class_='club-name').text.strip()
                 away_name = away_cell.find('div', class_='club-name').text.strip()
-
-                # Datum parsen
                 dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
 
                 if dt:
                     matches.append({
                         'start': dt.isoformat(),
                         'summary': f"{home_name} - {away_name}",
-                        'description': f"Heim: {home_name}\nGast: {away_name}",
+                        'description': f"Heim: {home_name}\nGast: {away_name}\nQuelle: {team_url}",
                         'location': "Sportplatz"
                     })
             except Exception as e:
@@ -107,7 +98,6 @@ def add_to_calendar(cal, matches):
         event.add('dtend', dt_start + timedelta(minutes=105))
         event.add('description', m['description'])
         event.add('location', m['location'])
-        # UID mit Domain-Suffix für bessere Kompatibilität
         event.add('uid', str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{m['summary']}_{m['start']}")) + "@tus-dornberg.de")
         event.add('dtstamp', datetime.now())
         cal.add_component(event)
@@ -149,25 +139,21 @@ def main():
     for doc in docs:
         team = doc.to_dict()
         team_id = team.get('id')
+        team_url = team.get('url')
         team_name = team.get('name', 'Unbekannt')
 
         if not team_id: continue
 
         print(f"DEBUG: Verarbeite Team: {team_name} ({team_id})")
-        matches = scrape_team(team_id)
+        matches = scrape_team(team_id, team_url)
 
         if matches:
-            # Einzel-Kalender
             ind_cal = create_calendar(f"Spielplan {team_name}")
             add_to_calendar(ind_cal, matches)
             with open(f'web/calendars/{team_id}.ics', 'wb') as f:
                 f.write(ind_cal.to_ical())
-
-            # Master
             add_to_calendar(master_cal, matches)
             all_matches_count += len(matches)
-
-            # Firestore Update
             doc.reference.update({'lastMatches': matches[:10]})
         else:
             doc.reference.update({'lastMatches': []})
