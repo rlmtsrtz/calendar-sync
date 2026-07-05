@@ -68,7 +68,6 @@ def scrape_team(team_url, team_id, team_filter_name):
                 if date_cell:
                     text = date_cell.get_text(strip=True)
                     if '|' in text:
-                        # Falls nur Uhrzeit da steht (z.B. "15:00"), behalten wir das alte Datum
                         date_part, time_part = text.split('|')
                         if re.search(r'\d{2}\.\d{2}', date_part):
                             current_date_str = date_part.strip()
@@ -76,7 +75,6 @@ def scrape_team(team_url, team_id, team_filter_name):
                     elif re.search(r'\d{2}\.\d{2}', text):
                         current_date_str = text.strip()
 
-                # Headline Check
                 headline_text = row.get_text(strip=True)
                 if 'row-headline' in classes:
                     match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
@@ -97,13 +95,10 @@ def scrape_team(team_url, team_id, team_filter_name):
 
                     dt = parse_date(current_date_str, current_time_str)
                     if dt:
-                        # Typ bestimmen für Filterung (Heim/Auswärts)
-                        is_home = False
-                        # Wir vergleichen mit dem Namen, den der User vergeben hat,
-                        # oder wir schauen ob unser Teamname in home_text vorkommt.
-                        # Da team_filter_name der Name ist, den der User vergeben hat (z.B. "TuS Dornberg")
-                        if team_filter_name.lower() in home_text.lower():
-                            is_home = True
+                        # LOGIK-KORREKTUR:
+                        # Heimspiel ist wahr, wenn "TuS Dornberg" im Namen des ERSTEN Teams vorkommt.
+                        # Wir suchen nach dem Wort "Dornberg", um flexibel zu sein (TuS Dornberg II etc.)
+                        is_home = "dornberg" in home_text.lower()
 
                         matches.append({
                             'start': dt.isoformat(),
@@ -165,6 +160,13 @@ def main():
         return
 
     db = firestore.client()
+
+    # Update-Request in Firestore zurücksetzen
+    try:
+        db.collection('status').document('scraper').update({'requestUpdate': False})
+    except:
+        pass
+
     teams_ref = db.collection('teams')
     docs = list(teams_ref.stream())
     print(f"DEBUG: {len(docs)} Teams aus Firestore geladen.")
@@ -189,7 +191,6 @@ def main():
         matches = scrape_team(team_url, team_id, team_name)
 
         if matches:
-            # Einzel-ICS (Alle, Heim, Auswärts)
             for t in ['all', 'home', 'away']:
                 suffix = "" if t == "all" else f"_{t}"
                 cal_name = team_name + ("" if t == "all" else f" ({'Heim' if t == 'home' else 'Auswärts'})")
@@ -198,7 +199,6 @@ def main():
                 with open(f'web/calendars/{team_id}{suffix}.ics', 'wb') as f:
                     f.write(ind_cal.to_ical())
 
-            # Kombi-ICS befüllen
             add_to_calendar(master_all, matches, 'all')
             add_to_calendar(master_home, matches, 'home')
             add_to_calendar(master_away, matches, 'away')
@@ -208,7 +208,6 @@ def main():
         else:
             doc.reference.update({'lastMatches': []})
 
-    # Master speichern
     with open('web/calendars/all_teams.ics', 'wb') as f:
         f.write(master_all.to_ical())
     with open('web/calendars/all_teams_home.ics', 'wb') as f:
