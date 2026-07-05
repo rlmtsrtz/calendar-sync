@@ -26,46 +26,42 @@ def parse_date(date_str, time_str):
         return None
 
 def scrape_team(team_url, team_id):
-    # Wir nutzen die vom User angegebene URL, hängen aber den Bereich für den Spielplan an,
-    # falls er fehlt, oder nutzen die AJAX Schnittstelle mit der ID, falls die URL ungültig ist.
-
-    # Wenn wir eine valide ID haben, ist die AJAX URL am stabilsten:
-    ajax_url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
-
+    # WUNSCH: Wir nutzen direkt die vom User bereitgestellte URL
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest'
     }
 
-    print(f"DEBUG: Scrape Start für ID: {team_id}")
-    print(f"DEBUG: Versuche AJAX URL: {ajax_url}")
+    print(f"DEBUG: Scrape Start für URL: {team_url}")
 
     try:
-        response = requests.get(ajax_url, headers=headers, timeout=20)
-
-        # Falls AJAX fehlschlägt, versuchen wir die Original-URL direkt
-        if response.status_code != 200 and team_url:
-            print(f"DEBUG: AJAX fehlgeschlagen ({response.status_code}), versuche Original-URL: {team_url}")
-            response = requests.get(team_url, headers=headers, timeout=20)
+        response = requests.get(team_url, headers=headers, timeout=20)
 
         if response.status_code != 200:
-            print(f"DEBUG: Fehler beim Abrufen der Daten. Status: {response.status_code}")
+            print(f"DEBUG: Fehler beim Abrufen der Original-URL. Status: {response.status_code}")
+            # Fallback auf AJAX nur wenn die URL wirklich nicht geht
+            ajax_url = f"https://www.fussball.de/ajax-team-matchplan/-/team-id/{team_id}"
+            print(f"DEBUG: Versuche AJAX Fallback: {ajax_url}")
+            response = requests.get(ajax_url, headers=headers, timeout=20)
+
+        if response.status_code != 200:
+            print(f"DEBUG: Auch Fallback fehlgeschlagen. Status: {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # Suche nach den Match-Zeilen
+        # Fussball.de nutzt oft 'row-match' für die Spiele
         rows = soup.find_all('tr', class_='row-match')
         if not rows:
-            # Fallback Selektoren
+            # Fallback Selektoren für verschiedene Ansichten
             rows = soup.select('.table-matchplan tr.row-match') or soup.select('tr[class*="row-match"]')
 
-        print(f"DEBUG: {len(rows)} potenzielle Spiele in der Tabelle gefunden.")
+        print(f"DEBUG: {len(rows)} potenzielle Spiele gefunden.")
 
         matches = []
         for row in rows:
             try:
-                # Überspringe versteckte Zeilen (z.B. Absetzungen)
+                # Überspringe versteckte Zeilen (z.B. Absetzungen, falls gewünscht)
                 if 'display-none' in row.get('class', []):
                     continue
 
