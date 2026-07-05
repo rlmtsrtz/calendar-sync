@@ -31,82 +31,105 @@ def parse_date(date_str, time_str):
         return None
 
 def scrape_team(team_url, team_id, team_filter_name):
+    # WUNSCH: Wir nutzen den Mannschaftsspielplan via AJAX Resource
+    # Der User hat herausgefunden, dass dieser Link alle Spiele liefert:
+    # https://www.fussball.de/ajax.team.matchplan/-/mode/PAGE/team-id/{team_id}
+
+    ajax_resource_url = f"https://www.fussball.de/ajax.team.matchplan/-/mode/PAGE/team-id/{team_id}"
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://www.fussball.de/'
+        'Referer': team_url
     }
 
-    print(f"DEBUG: Scrape Start für URL: {team_url}")
+    print(f"DEBUG: Scrape Start via AJAX Resource: {ajax_resource_url}")
 
     try:
-        response = requests.get(team_url, headers=headers, timeout=20)
+        response = requests.get(ajax_resource_url, headers=headers, timeout=20)
+
+        # Falls die AJAX Resource fehlschlägt, nutzen wir als Fallback die vom User bereitgestellte URL
         if response.status_code != 200:
-            print(f"DEBUG: Fehler beim Abrufen der URL ({response.status_code}).")
+            print(f"DEBUG: AJAX Resource fehlgeschlagen ({response.status_code}). Versuche Original-URL.")
+            response = requests.get(team_url, headers=headers, timeout=20)
+
+        if response.status_code != 200:
+            print(f"DEBUG: Fehler beim Abrufen der Seite ({response.status_code}).")
             return None
 
         soup = BeautifulSoup(response.content, 'html.parser')
-        tbody = soup.find('tbody')
-        if not tbody:
+
+        # Wir suchen alle Tabellen-Bodys
+        tbodies = soup.find_all('tbody')
+        if not tbodies:
             print("DEBUG: Kein <tbody> gefunden.")
             return None
-
-        rows = tbody.find_all('tr')
-        print(f"DEBUG: {len(rows)} Zeilen im <tbody> gefunden.")
 
         matches = []
         current_date_str = ""
         current_time_str = ""
 
-        for row in rows:
-            classes = row.get('class', [])
+        for tbody in tbodies:
+            rows = tbody.find_all('tr')
+            for row in rows:
+                classes = row.get('class', [])
 
-            # Fall 1: Zeile mit Datum und Wettbewerb
-            if 'row-competition' in classes or 'row-headline' in classes:
-                date_cell = row.find('td', class_='column-date')
-                if date_cell:
-                    text = date_cell.get_text(strip=True)
-                    if '|' in text:
-                        date_part, time_part = text.split('|')
-                        if re.search(r'\d{2}\.\d{2}', date_part):
-                            current_date_str = date_part.strip()
-                        current_time_str = time_part.strip()
-                    elif re.search(r'\d{2}\.\d{2}', text):
-                        current_date_str = text.strip()
+                # Datum extrahieren aus row-headline oder row-competition
+                if 'row-competition' in classes or 'row-headline' in classes:
+                    date_cell = row.find('td', class_='column-date')
+                    if date_cell:
+                        text = date_cell.get_text(strip=True)
+                        if '|' in text:
+                            # Wir prüfen ob ein Datum enthalten ist
+                            parts = text.split('|')
+                            date_candidate = parts[0].strip()
+                            time_candidate = parts[1].strip()
 
-                headline_text = row.get_text(strip=True)
-                if 'row-headline' in classes:
-                    match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
-                    if match:
-                        current_date_str = match.group(1)
-                        current_time_str = match.group(2)
-                continue
+                            if re.search(r'\d{2}\.\d{2}', date_candidate):
+                                current_date_str = date_candidate
 
-            # Fall 2: Zeile mit den Vereinen
-            club_cells = row.find_all('td', class_='column-club')
-            if len(club_cells) >= 2 and current_date_str:
-                home_name_div = club_cells[0].find('div', class_='club-name')
-                away_name_div = club_cells[1].find('div', class_='club-name')
+                            # Die Zeit nehmen wir immer wenn sie da steht
+                            if re.search(r'\d{2}:\d{2}', time_candidate):
+                                current_time_str = time_candidate
+                        else:
+                            # Nur Datum oder nur Zeit?
+                            if re.search(r'\d{2}\.\d{2}', text):
+                                current_date_str = text.strip()
+                            if re.search(r'\d{2}:\d{2}', text):
+                                current_time_str = text.strip()
 
-                if home_name_div and away_name_div:
-                    home_text = home_name_div.get_text(strip=True)
-                    away_text = away_name_div.get_text(strip=True)
+                    # Mobile Headline Check
+                    headline_text = row.get_text(strip=True)
+                    if 'row-headline' in classes:
+                        match = re.search(r'(\d{2}\.\d{2}\.\d{4}) - (\d{2}:\d{2})', headline_text)
+                        if match:
+                            current_date_str = match.group(1)
+                            current_time_str = match.group(2)
+                    continue
 
-                    dt = parse_date(current_date_str, current_time_str)
-                    if dt:
-                        # LOGIK-KORREKTUR:
-                        # Heimspiel ist wahr, wenn "TuS Dornberg" im Namen des ERSTEN Teams vorkommt.
-                        # Wir suchen nach dem Wort "Dornberg", um flexibel zu sein (TuS Dornberg II etc.)
-                        is_home = "dornberg" in home_text.lower()
+                # Spiel-Daten extrahieren (Vereine)
+                club_cells = row.find_all('td', class_='column-club')
+                if len(club_cells) >= 2 and current_date_str:
+                    home_name_div = club_cells[0].find('div', class_='club-name')
+                    away_name_div = club_cells[1].find('div', class_='club-name')
 
-                        matches.append({
-                            'start': dt.isoformat(),
-                            'summary': f"{home_text} - {away_text}",
-                            'description': f"Heim: {home_text}\nGast: {away_text}\nQuelle: {team_url}",
-                            'location': "Sportplatz",
-                            'isHome': is_home
-                        })
+                    if home_name_div and away_name_div:
+                        home_text = home_name_div.get_text(strip=True)
+                        away_text = away_name_div.get_text(strip=True)
+
+                        dt = parse_date(current_date_str, current_time_str)
+                        if dt:
+                            # WUNSCH: Heimspiel ist wahr, wenn "Dornberg" im Namen des ERSTEN Teams vorkommt.
+                            is_home = "dornberg" in home_text.lower()
+
+                            matches.append({
+                                'start': dt.isoformat(),
+                                'summary': f"{home_text} - {away_text}",
+                                'description': f"Heim: {home_text}\nGast: {away_text}\nQuelle: {team_url}",
+                                'location': "Sportplatz",
+                                'isHome': is_home
+                            })
 
         print(f"DEBUG: {len(matches)} gültige Spiele extrahiert.")
         return matches
@@ -125,8 +148,6 @@ def create_calendar(name):
     return cal
 
 def add_to_calendar(cal, matches, filter_type='all'):
-    # filter_type: 'all', 'home', 'away'
-    count = 0
     for m in matches:
         if filter_type == 'home' and not m['isHome']: continue
         if filter_type == 'away' and m['isHome']: continue
@@ -141,8 +162,6 @@ def add_to_calendar(cal, matches, filter_type='all'):
         event.add('uid', str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{m['summary']}_{m['start']}")) + "@tus-dornberg.de")
         event.add('dtstamp', datetime.now())
         cal.add_component(event)
-        count += 1
-    return count
 
 def main():
     print("DEBUG: Scraper gestartet.")
@@ -160,13 +179,6 @@ def main():
         return
 
     db = firestore.client()
-
-    # Update-Request in Firestore zurücksetzen
-    try:
-        db.collection('status').document('scraper').update({'requestUpdate': False})
-    except:
-        pass
-
     teams_ref = db.collection('teams')
     docs = list(teams_ref.stream())
     print(f"DEBUG: {len(docs)} Teams aus Firestore geladen.")
@@ -184,7 +196,6 @@ def main():
         team_id = team.get('id')
         team_url = team.get('url')
         team_name = team.get('name', 'Unbekannt')
-
         if not team_id: continue
 
         print(f"DEBUG: Verarbeite: {team_name}")
@@ -204,7 +215,7 @@ def main():
             add_to_calendar(master_away, matches, 'away')
 
             all_matches_count += len(matches)
-            doc.reference.update({'lastMatches': matches[:15]})
+            doc.reference.update({'lastMatches': matches[:100]}) # Alle Spiele in die Vorschau
         else:
             doc.reference.update({'lastMatches': []})
 

@@ -50,21 +50,6 @@ class CalendarDashboard extends StatefulWidget {
 
 class _CalendarDashboardState extends State<CalendarDashboard> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  bool _isUpdating = false;
-
-  Future<void> _triggerUpdate() async {
-    setState(() => _isUpdating = true);
-    
-    // Einfaches Lade-Overlay für 10 Sekunden zur visuellen Rückmeldung
-    await Future.delayed(const Duration(seconds: 10));
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Das automatische Update läuft alle 3 Stunden.')),
-      );
-      setState(() => _isUpdating = false);
-    }
-  }
 
   String _getWebcalUrl(String filename) {
     final baseUrl = Uri.base.toString().split('#')[0];
@@ -152,198 +137,170 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Scaffold(
-          appBar: AppBar(
-            title: const Text('TuS Dornberg Kalender Zentrale'),
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.sync),
-                tooltip: 'Info',
-                onPressed: _isUpdating ? null : _triggerUpdate,
-              ),
-            ],
-          ),
-          body: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('TuS Dornberg Kalender Zentrale'),
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('KOMBI-LINKS (Alle Mannschaften)', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            _buildKombiCard('Alle Spiele', 'all_teams.ics', Icons.all_inclusive),
+            _buildKombiCard('Nur Heimspiele', 'all_teams_home.ics', Icons.home),
+            _buildKombiCard('Nur Auswärtsspiele', 'all_teams_away.ics', Icons.flight_takeoff),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('KOMBI-LINKS (Alle Mannschaften)', style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                _buildKombiCard('Alle Spiele', 'all_teams.ics', Icons.all_inclusive),
-                _buildKombiCard('Nur Heimspiele', 'all_teams_home.ics', Icons.home),
-                _buildKombiCard('Nur Auswärtsspiele', 'all_teams_away.ics', Icons.flight_takeoff),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text(
-                      'Deine Mannschaften',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                    TextButton.icon(
-                      onPressed: _isUpdating ? null : _triggerUpdate,
-                      icon: const Icon(Icons.info_outline),
-                      label: const Text('Auto-Update: Alle 3h'),
-                    ),
-                  ],
+                const Text(
+                  'Deine Mannschaften',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: StreamBuilder<QuerySnapshot>(
-                    stream: _firestore.collection('teams').orderBy('createdAt', descending: true).snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) return Text('Fehler: ${snapshot.error}');
-                      if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-
-                      final teams = snapshot.data!.docs;
-
-                      if (teams.isEmpty) {
-                        return const Center(child: Text('Noch keine Mannschaften angelegt.'));
-                      }
-
-                      return ListView.builder(
-                        itemCount: teams.length,
-                        itemBuilder: (context, index) {
-                          final teamDoc = teams[index];
-                          final team = teamDoc.data() as Map<String, dynamic>;
-                          final teamId = team['id'] ?? 'Keine ID';
-                          final List matches = team['lastMatches'] ?? [];
-
-                          return Card(
-                            child: ExpansionTile(
-                              title: Text(team['name'] ?? 'Unbekannt', style: const TextStyle(fontWeight: FontWeight.bold)),
-                              subtitle: Text('ID: $teamId'),
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                                  child: Wrap(
-                                    spacing: 8,
-                                    children: [
-                                      ActionChip(
-                                        avatar: const Icon(Icons.copy, size: 16),
-                                        label: const Text('Alle'),
-                                        onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Link kopiert!'),
-                                      ),
-                                      ActionChip(
-                                        avatar: const Icon(Icons.home, size: 16),
-                                        label: const Text('Heim'),
-                                        onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_home.ics'), 'Link kopiert!'),
-                                      ),
-                                      ActionChip(
-                                        avatar: const Icon(Icons.flight_takeoff, size: 16),
-                                        label: const Text('Gast'),
-                                        onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_away.ics'), 'Link kopiert!'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                if (matches.isEmpty)
-                                  const Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: Text('Noch keine Spieldaten gefunden. Das System prüft alle 3h auf Updates.'),
-                                  )
-                                else
-                                  ...matches.map((m) {
-                                    final DateTime date = DateTime.parse(m['start']);
-                                    final bool isHome = m['isHome'] ?? false;
-                                    return ListTile(
-                                      dense: true,
-                                      leading: Icon(isHome ? Icons.home : Icons.flight_takeoff, size: 16, color: Colors.grey),
-                                      title: Text(m['summary']),
-                                      subtitle: Text(DateFormat('dd.MM.yyyy HH:mm').format(date)),
-                                    );
-                                  }).toList(),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      TextButton.icon(
-                                        onPressed: () => launchUrl(Uri.parse(team['url'] ?? '')),
-                                        icon: const Icon(Icons.link),
-                                        label: const Text('Fussball.de'),
-                                      ),
-                                      TextButton.icon(
-                                        onPressed: () async {
-                                          if (await showDialog(
-                                            context: context,
-                                            builder: (context) => AlertDialog(
-                                              title: const Text('Mannschaft löschen?'),
-                                              actions: [
-                                                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
-                                                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
-                                              ],
-                                            ),
-                                          )) {
-                                            await teamDoc.reference.delete();
-                                          }
-                                        },
-                                        icon: const Icon(Icons.delete, color: Colors.red),
-                                        label: const Text('Löschen', style: TextStyle(color: Colors.red)),
-                                      ),
-                                    ],
-                                  ),
-                                )
-                              ],
-                            ),
-                          );
-                        },
-                      );
-                    },
+                // Rein informativer Chip, nicht mehr drückbar
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(20),
                   ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _addTeamDialog,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Mannschaft hinzufügen'),
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () => launchUrl(Uri.parse('https://github.com/rlmtsrtz/calendar-sync/actions')),
-                      icon: const Icon(Icons.settings),
-                      label: const Text('Logs'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_isUpdating)
-          Container(
-            color: Colors.black54,
-            child: const Center(
-              child: Card(
-                child: Padding(
-                  padding: EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+                  child: const Row(
                     children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 20),
-                      Text(
-                        'Wartungsmodus...',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                      SizedBox(height: 10),
-                      const Text(
-                        'Das System aktualisiert sich alle 3 Stunden automatisch.',
-                        textAlign: TextAlign.center,
-                      ),
+                      Icon(Icons.auto_mode, size: 16, color: Colors.grey),
+                      SizedBox(width: 4),
+                      Text('Auto-Update: Alle 3h', style: TextStyle(color: Colors.grey, fontSize: 12)),
                     ],
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: _firestore.collection('teams').orderBy('createdAt', descending: true).snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) return Text('Fehler: ${snapshot.error}');
+                  if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+
+                  final teams = snapshot.data!.docs;
+
+                  if (teams.isEmpty) {
+                    return const Center(child: Text('Noch keine Mannschaften angelegt.'));
+                  }
+
+                  return ListView.builder(
+                    itemCount: teams.length,
+                    itemBuilder: (context, index) {
+                      final teamDoc = teams[index];
+                      final team = teamDoc.data() as Map<String, dynamic>;
+                      final teamId = team['id'] ?? 'Keine ID';
+                      final List matches = team['lastMatches'] ?? [];
+
+                      return Card(
+                        child: ExpansionTile(
+                          title: Text(team['name'] ?? 'Unbekannt', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('ID: $teamId'),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                              child: Wrap(
+                                spacing: 8,
+                                children: [
+                                  ActionChip(
+                                    avatar: const Icon(Icons.copy, size: 16),
+                                    label: const Text('Alle'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('$teamId.ics'), 'Link kopiert!'),
+                                  ),
+                                  ActionChip(
+                                    avatar: const Icon(Icons.home, size: 16),
+                                    label: const Text('Heim'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_home.ics'), 'Link kopiert!'),
+                                  ),
+                                  ActionChip(
+                                    avatar: const Icon(Icons.flight_takeoff, size: 16),
+                                    label: const Text('Gast'),
+                                    onPressed: () => _copyToClipboard(_getWebcalUrl('${teamId}_away.ics'), 'Link kopiert!'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (matches.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text('Noch keine Spieldaten gefunden. Das System prüft alle 3h auf Updates.'),
+                              )
+                            else
+                              ...matches.map((m) {
+                                final DateTime date = DateTime.parse(m['start']);
+                                final bool isHome = m['isHome'] ?? false;
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(isHome ? Icons.home : Icons.flight_takeoff, size: 16, color: Colors.grey),
+                                  title: Text(m['summary']),
+                                  subtitle: Text(DateFormat('dd.MM.yyyy HH:mm').format(date)),
+                                );
+                              }).toList(),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  TextButton.icon(
+                                    onPressed: () => launchUrl(Uri.parse(team['url'] ?? '')),
+                                    icon: const Icon(Icons.link),
+                                    label: const Text('Fussball.de'),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: () async {
+                                      if (await showDialog(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: const Text('Mannschaft löschen?'),
+                                          actions: [
+                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Abbrechen')),
+                                            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Löschen')),
+                                          ],
+                                        ),
+                                      )) {
+                                        await teamDoc.reference.delete();
+                                      }
+                                    },
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    label: const Text('Löschen', style: TextStyle(color: Colors.red)),
+                                  ),
+                                ],
+                              ),
+                            )
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
               ),
             ),
-          ),
-      ],
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _addTeamDialog,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Mannschaft hinzufügen'),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => launchUrl(Uri.parse('https://github.com/rlmtsrtz/calendar-sync/actions')),
+                  icon: const Icon(Icons.settings),
+                  label: const Text('Logs'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
