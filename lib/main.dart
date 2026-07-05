@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert'; // WICHTIG: Fix für json.encode Fehler
+import 'dart:convert';
 import 'dart:async';
 
 void main() async {
@@ -55,30 +55,14 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   Future<void> _triggerUpdate() async {
     setState(() => _isUpdating = true);
     
-    try {
-      // "ECHTES" Update Signal an Firestore senden
-      // Der Scraper (Python) kann dieses Flag beim Start prüfen oder wir nutzen es zur Info
-      await _firestore.collection('status').document('scraper').set({
-        'requestUpdate': true,
-        'requestedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Anzeige für den User (ca. 45 Sek, solange der GitHub Job ca. braucht)
-      await Future.delayed(const Duration(seconds: 45));
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Update-Anfrage gesendet! Die Kalender werden im Hintergrund aktualisiert.')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Fehler beim Update-Trigger: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isUpdating = false);
+    // Einfaches Lade-Overlay für 10 Sekunden zur visuellen Rückmeldung
+    await Future.delayed(const Duration(seconds: 10));
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Das automatische Update läuft alle 3 Stunden.')),
+      );
+      setState(() => _isUpdating = false);
     }
   }
 
@@ -176,8 +160,8 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
             backgroundColor: Theme.of(context).colorScheme.primaryContainer,
             actions: [
               IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Update erzwingen',
+                icon: const Icon(Icons.sync),
+                tooltip: 'Info',
                 onPressed: _isUpdating ? null : _triggerUpdate,
               ),
             ],
@@ -202,8 +186,8 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                     ),
                     TextButton.icon(
                       onPressed: _isUpdating ? null : _triggerUpdate,
-                      icon: const Icon(Icons.sync),
-                      label: const Text('Aktualisieren'),
+                      icon: const Icon(Icons.info_outline),
+                      label: const Text('Auto-Update: Alle 3h'),
                     ),
                   ],
                 ),
@@ -260,7 +244,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                                 if (matches.isEmpty)
                                   const Padding(
                                     padding: EdgeInsets.all(16.0),
-                                    child: Text('Noch keine Spieldaten gefunden. Starte das Update.'),
+                                    child: Text('Noch keine Spieldaten gefunden. Das System prüft alle 3h auf Updates.'),
                                   )
                                 else
                                   ...matches.map((m) {
@@ -345,12 +329,12 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                       CircularProgressIndicator(),
                       SizedBox(height: 20),
                       Text(
-                        'Kalender wird aktualisiert...',
+                        'Wartungsmodus...',
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                       SizedBox(height: 10),
-                      Text(
-                        'Dies dauert ca. 45 Sekunden.\nBitte die App nicht schließen.',
+                      const Text(
+                        'Das System aktualisiert sich alle 3 Stunden automatisch.',
                         textAlign: TextAlign.center,
                       ),
                     ],
