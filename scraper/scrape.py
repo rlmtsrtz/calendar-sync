@@ -3,12 +3,12 @@ from bs4 import BeautifulSoup
 from icalendar import Calendar, Event
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 def parse_date(date_str, time_str):
-    # Example date_str: "So, 10.09.2023"
-    # Example time_str: "15:00"
     match = re.search(r'(\d{2}\.\d{2}\.\d{4})', date_str)
     if not match:
         return None
@@ -33,15 +33,12 @@ def scrape_team(team_id):
     soup = BeautifulSoup(response.content, 'html.parser')
     matches = []
 
-    # The structure on fussball.de for matchplan rows
-    # This might need adjustment based on the actual HTML
     table = soup.find('div', id='team-matchplan-table')
     if not table:
-        # Fallback to general search if ID is different
         table = soup.find('table', class_='table-matchplan')
 
     if not table:
-        print("Could not find matchplan table")
+        print(f"Could not find matchplan table for {team_id}")
         return None
 
     rows = table.find_all('tr', class_='row-match')
@@ -49,10 +46,16 @@ def scrape_team(team_id):
         try:
             date_cell = row.find('td', class_='column-date')
             time_cell = row.find('td', class_='column-time')
-            team_home = row.find('td', class_='column-team-home').find('div', class_='club-name').text.strip()
-            team_away = row.find('td', class_='column-team-away').find('div', class_='club-name').text.strip()
 
-            # Location often in a tooltip or separate column
+            home_div = row.find('td', class_='column-team-home').find('div', class_='club-name')
+            away_div = row.find('td', class_='column-team-away').find('div', class_='club-name')
+
+            if not home_div or not away_div:
+                continue
+
+            team_home = home_div.text.strip()
+            team_away = away_div.text.strip()
+
             location = "Siehe fussball.de"
 
             dt = parse_date(date_cell.text.strip(), time_cell.text.strip())
@@ -78,8 +81,6 @@ def generate_ics(team_id, team_name, matches):
         event = Event()
         event.add('summary', m['summary'])
         event.add('dtstart', m['start'])
-        # Assume 105 minutes (90 + halftime + buffer)
-        from datetime import timedelta
         event.add('dtend', m['start'] + timedelta(minutes=105))
         event.add('description', m['description'])
         event.add('location', m['location'])
@@ -90,17 +91,42 @@ def generate_ics(team_id, team_name, matches):
         f.write(cal.to_ical())
 
 def main():
-    with open('scraper/teams.json', 'r', encoding='utf-8') as f:
-        teams = json.load(f)
+    # Initialize Firebase
+    # On local, you'd use a service account json file.
+    # On GitHub Actions, we'll pass the JSON via environment variable.
+    firebase_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
+    if firebase_json:
+        cred_dict = json.loads(firebase_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+    else:
+        # Fallback for local testing if you have a file
+        try:
+            cred = credentials.Certificate('service-account.json')
+            firebase_admin.initialize_app(cred)
+        except:
+            print("No Firebase credentials found. Set FIREBASE_SERVICE_ACCOUNT env var.")
+            return
 
-    for team in teams:
-        print(f"Scraping {team['name']} ({team['id']})...")
-        matches = scrape_team(team['id'])
+    db = firestore.client()
+    teams_ref = db.collection('teams')
+    docs = teams_ref.stream()
+
+    for doc in docs:
+        team = doc.to_dict()
+        team_id = team.get('id')
+        team_name = team.get('name', 'Unbekannt')
+
+        if not team_id:
+            continue
+
+        print(f"Scraping {team_name} ({team_id})...")
+        matches = scrape_team(team_id)
         if matches:
-            generate_ics(team['id'], team['name'], matches)
-            print(f"Generated calendar for {team['name']}")
+            generate_ics(team_id, team_name, matches)
+            print(f"Generated calendar for {team_name}")
         else:
-            print(f"No matches found for {team['name']}")
+            print(f"No matches found for {team_name}")
 
 if __name__ == "__main__":
     main()

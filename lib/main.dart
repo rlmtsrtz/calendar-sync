@@ -3,8 +3,22 @@ import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: const FirebaseOptions(
+      apiKey: "AIzaSyAPeEpxsaqPi8s0ByBFK7Sam_D_F13KCrs",
+      authDomain: "tus-dornberg-calendar.firebaseapp.com",
+      projectId: "tus-dornberg-calendar",
+      storageBucket: "tus-dornberg-calendar.firebasestorage.app",
+      messagingSenderId: "275335490729",
+      appId: "1:275335490729:web:bfe85fbb296d3056e84db8",
+      measurementId: "G-2LTSN8KVVK",
+    ),
+  );
   runApp(const MyApp());
 }
 
@@ -32,109 +46,126 @@ class CalendarDashboard extends StatefulWidget {
 }
 
 class _CalendarDashboardState extends State<CalendarDashboard> {
-  List<dynamic> _teams = [];
-  bool _isLoading = true;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  @override
-  void initState() {
-    super.initState();
-    _fetchTeams();
-  }
-
-  Future<void> _fetchTeams() async {
-    try {
-      // In a real deployed app, this would fetch from the same origin
-      // For now, we simulate the structure
-      final response = await http.get(Uri.parse('teams.json'));
-      if (response.statusCode == 200) {
-        setState(() {
-          _teams = json.decode(response.body);
-          _isLoading = false;
-        });
-      } else {
-        // Fallback or error handling
-        setState(() => _isLoading = false);
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-    }
+  void _addTeamDialog() {
+    String name = '';
+    String id = '';
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Neue Mannschaft hinzufügen'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: const InputDecoration(labelText: 'Name der Mannschaft'),
+              onChanged: (value) => name = value,
+            ),
+            TextField(
+              decoration: const InputDecoration(labelText: 'Fussball.de Team-ID'),
+              onChanged: (value) => id = value,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+          ElevatedButton(
+            onPressed: () async {
+              if (name.isNotEmpty && id.isNotEmpty) {
+                await _firestore.collection('teams').doc(id).set({
+                  'name': name,
+                  'id': id,
+                  'createdAt': FieldValue.serverTimestamp(),
+                });
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('Speichern'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Fussball.de Kalender Abonnieren'),
+        title: const Text('Fussball.de Kalender'),
         backgroundColor: Theme.of(context).colorScheme.primaryContainer,
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Verfügbare Mannschaften',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 16),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: _teams.length,
-                      itemBuilder: (context, index) {
-                        final team = _teams[index];
-                        return Card(
-                          child: ListTile(
-                            title: Text(team['name']),
-                            subtitle: Text('ID: ${team['id']}'),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.copy),
-                                  tooltip: 'Webcal Link kopieren',
-                                  onPressed: () {
-                                    final baseUrl = Uri.base.toString().split('#')[0];
-                                    final webcalUrl = 'webcal://${Uri.parse(baseUrl).host}${Uri.parse(baseUrl).path}calendars/${team['id']}.ics';
-                                    Clipboard.setData(ClipboardData(text: webcalUrl));
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Webcal-Link kopiert!')),
-                                    );
-                                  },
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.download),
-                                  tooltip: 'ICS herunterladen',
-                                  onPressed: () async {
-                                    final baseUrl = Uri.base.toString().split('#')[0];
-                                    final url = Uri.parse('${baseUrl}calendars/${team['id']}.ics');
-                                    if (await canLaunchUrl(url)) {
-                                      await launchUrl(url, mode: LaunchMode.externalApplication);
-                                    }
-                                  },
-                                ),
-                              ],
-                            ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Mannschaften in der Datenbank',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: StreamBuilder<QuerySnapshot>(
+                stream: _firestore.collection('teams').snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) return Text('Fehler: ${snapshot.error}');
+                  if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+
+                  final teams = snapshot.data!.docs;
+
+                  return ListView.builder(
+                    itemCount: teams.length,
+                    itemBuilder: (context, index) {
+                      final team = teams[index].data() as Map<String, dynamic>;
+                      return Card(
+                        child: ListTile(
+                          title: Text(team['name'] ?? 'Unbekannt'),
+                          subtitle: Text('ID: ${team['id']}'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.copy),
+                                tooltip: 'Webcal Link kopieren',
+                                onPressed: () {
+                                  final baseUrl = Uri.base.toString().split('#')[0];
+                                  final webcalUrl = 'webcal://${Uri.parse(baseUrl).host}${Uri.parse(baseUrl).path}calendars/${team['id']}.ics';
+                                  Clipboard.setData(ClipboardData(text: webcalUrl));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Webcal-Link kopiert!')),
+                                  );
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.download),
+                                tooltip: 'ICS herunterladen',
+                                onPressed: () async {
+                                  final baseUrl = Uri.base.toString().split('#')[0];
+                                  final url = Uri.parse('${baseUrl}calendars/${team['id']}.ics');
+                                  if (await canLaunchUrl(url)) {
+                                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                                  }
+                                },
+                              ),
+                            ],
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      final Uri url = Uri.parse('https://github.com/rlmtsrtz/calendar-sync/issues/new?title=Mannschaft+hinzuf%C3%BCgen&body=Bitte+f%C3%BCge+folgende+Mannschaft+hinzu%3A%0A-%20Name%3A%20%0A-%20Team-ID%3A%20');
-                      if (await canLaunchUrl(url)) {
-                        await launchUrl(url, mode: LaunchMode.externalApplication);
-                      }
+                        ),
+                      );
                     },
-                    icon: const Icon(Icons.add),
-                    label: const Text('Mannschaft hinzufügen (via GitHub Issue)'),
-                  ),
-                ],
+                  );
+                },
               ),
             ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _addTeamDialog,
+              icon: const Icon(Icons.add),
+              label: const Text('Mannschaft hinzufügen'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
