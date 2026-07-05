@@ -1,32 +1,61 @@
-name: Deploy to GitHub Pages
+name: Update and Deploy
 
 on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '0 4 * * *' # Daily at 4 AM
+    - cron: '0 4 * * *' # Täglich um 4:00 Uhr
   workflow_dispatch:
 
-# Permissions for GitHub Pages deployment
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  build_and_deploy:
+  # JOB 1: Nur den Scraper ausführen (Schnell und stabil)
+  update_calendars:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Scraper Dependencies
+        run: pip install -r scraper/requirements.txt
+
+      - name: Run Scraper
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python scraper/scrape.py
+
+      - name: Commit Updated Calendars
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          mkdir -p web/calendars
+          git add web/calendars/*.ics || true
+          git commit -m "Update calendars" || echo "No changes to commit"
+          git push origin main || echo "No changes to push"
+
+  # JOB 2: Die Web-App bauen und deployen (Nur bei Push oder manuellem Start)
+  build_web:
+    needs: update_calendars
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main # Sicherstellen, dass wir die neuesten ICS-Files vom ersten Job haben
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -39,22 +68,8 @@ jobs:
       - name: Build Web
         run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install Python dependencies
-        run: pip install -r scraper/requirements.txt
-
-      - name: Run Scraper
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: python scraper/scrape.py
-
-      - name: Prepare Deployment Files
+      - name: Prepare and Upload Pages Artifact
         run: |
-          # Copy calendars to build directory
           mkdir -p build/web/calendars
           cp -r web/calendars/* build/web/calendars/ || true
 
