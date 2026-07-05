@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -95,19 +97,21 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                                   onPressed: () {
                                     final baseUrl = Uri.base.toString().split('#')[0];
                                     final webcalUrl = 'webcal://${Uri.parse(baseUrl).host}${Uri.parse(baseUrl).path}calendars/${team['id']}.ics';
-                                    // In real web app, use Clipboard.setData
+                                    Clipboard.setData(ClipboardData(text: webcalUrl));
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Link kopiert: $webcalUrl')),
+                                      SnackBar(content: Text('Webcal-Link kopiert!')),
                                     );
                                   },
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.download),
                                   tooltip: 'ICS herunterladen',
-                                  onPressed: () {
+                                  onPressed: () async {
                                     final baseUrl = Uri.base.toString().split('#')[0];
-                                    final url = '${baseUrl}calendars/${team['id']}.ics';
-                                    // Logic to trigger download
+                                    final url = Uri.parse('${baseUrl}calendars/${team['id']}.ics');
+                                    if (await canLaunchUrl(url)) {
+                                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                                    }
                                   },
                                 ),
                               ],
@@ -119,9 +123,11 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton.icon(
-                    onPressed: () {
-                      // Open GitHub Issues link to add team
-                      // window.open('https://github.com/USER/REPO/issues/new?template=add_team.md', '_blank');
+                    onPressed: () async {
+                      final Uri url = Uri.parse('https://github.com/rlmtsrtz/calendar-sync/issues/new?title=Mannschaft+hinzuf%C3%BCgen&body=Bitte+f%C3%BCge+folgende+Mannschaft+hinzu%3A%0A-%20Name%3A%20%0A-%20Team-ID%3A%20');
+                      if (await canLaunchUrl(url)) {
+                        await launchUrl(url, mode: LaunchMode.externalApplication);
+                      }
                     },
                     icon: const Icon(Icons.add),
                     label: const Text('Mannschaft hinzufügen (via GitHub Issue)'),
