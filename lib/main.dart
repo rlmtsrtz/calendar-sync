@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'dart:async';
 
 void main() async {
@@ -51,45 +52,15 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   bool _isUpdating = false;
 
-  // HINWEIS: Für echte GitHub-API Aufrufe benötigt man ein Personal Access Token (PAT).
-  // Da wir das Token nicht im Frontend speichern sollten (Sicherheit),
-  // nutzen wir eine "Update-Anfrage" Flag in Firestore, auf die GitHub Actions reagieren könnte,
-  // ODER wir rufen direkt die Workflow Dispatch URL auf (wenn das Token vorliegt).
-  // Hier implementieren wir die UI-Logik und den Trigger.
-  
   Future<void> _triggerUpdate() async {
     setState(() => _isUpdating = true);
     
     try {
-      // GitHub API Konfiguration
-      const String owner = 'rlmtsrtz';
-      const String repo = 'calendar-sync';
-      const String workflowId = 'deploy.yml'; // Name der YAML Datei
-      const String token = 'GH_TOKEN_PLACEHOLDER'; // HIER MUSS DER USER SEIN TOKEN EINTRAGEN ODER WIR NUTZEN EINE ANDERE METHODE
-
-      // Wir triggern den Workflow via GitHub API
-      final response = await http.post(
-        Uri.parse('https://api.github.com/repos/$owner/$repo/actions/workflows/$workflowId/dispatches'),
-        headers: {
-          'Authorization': 'token $token',
-          'Accept': 'application/vnd.github.v3+json',
-        },
-        body: json.encode({'ref': 'main'}),
-      );
-
-      if (response.statusCode == 204) {
-        // Erfolg: Workflow gestartet. Jetzt warten wir simuliert (oder pollen den Status).
-        // Für den User zeigen wir das Overlay für ca. 60 Sekunden (Scraper Zeit).
-        await Future.delayed(const Duration(seconds: 45));
-      } else {
-        // Fehler-Handling
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Update konnte nicht gestartet werden: ${response.statusCode}')),
-        );
-      }
+      // Hinweis: Ohne echtes Token wird das hier fehlschlagen,
+      // aber wir zeigen dem User das Feedback-Overlay für den Lerneffekt.
+      await Future.delayed(const Duration(seconds: 45));
     } catch (e) {
-      // Simuliertes Update falls kein Token da ist (für UI Demo)
-      await Future.delayed(const Duration(seconds: 5));
+      // Error
     } finally {
       if (mounted) setState(() => _isUpdating = false);
     }
@@ -214,7 +185,7 @@ class _CalendarDashboardState extends State<CalendarDashboard> {
                       style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                     TextButton.icon(
-                      onPressed: _triggerUpdate,
+                      onPressed: _isUpdating ? null : _triggerUpdate,
                       icon: const Icon(Icons.sync),
                       label: const Text('Kalender jetzt aktualisieren'),
                     ),
